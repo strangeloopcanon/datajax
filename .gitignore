@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environments / tools
+.venv/
+venv/
+.env
+.DS_Store
+
+# Build / packaging
+build/
+dist/
+*.egg-info/
+
+# Editor/IDE
+.idea/
+.vscode/
+.claude/
+
+# Local data / outputs
+bench.json
+demo_ckpt_*/
+demo_ucx_ckpt_*/
+manifest_*.json
+plan.json
+transfer.plan.json
+m_prev.json
+m_next.json
+
+# Project-local docs (do not commit)
+# Keep these local or move details into docs/
+idea.md
+AGENTS.md
+
+# Generated logs and segments
+logs/
+segments/
+telemetry/
+
+# Generated configs
+configs/staged.yaml
+
+# Do not blanket-ignore Markdown; project docs are tracked (README.md, README_native_plan.md, docs/**)

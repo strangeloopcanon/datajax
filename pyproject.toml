@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[project]
+name = "datajax"
+version = "0.0.1"
+description = "JAX-inspired dataframe transforms with Bodo-backed execution"
+readme = "README.md"
+authors = [{name = "Rohit", email = ""}]
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24",
+  "pandas>=2.0",
+  "pyarrow>=12.0",
+  "bodo>=2024.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "pytest-mock>=3.10",
+  "pytest-cov>=4.0",
+  "ruff>=0.4",
+  "pyright>=1.1",
+  "mypy>=1.8",
+]
+
+[tool.python]
+path = ["datajax"]
+
+[tool.ruff]
+line-length = 88
+src = ["datajax", "tests"]
+select = ["E", "F", "I", "UP", "B", "Q", "TCH"]
+ignore = ["E203"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[tool.pyright]
+include = ["datajax"]
+typeCheckingMode = "standard"
+reportMissingTypeStubs = "warning"
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+  "integration: marks slow integration tests that require Bodo and MPI",
+]
