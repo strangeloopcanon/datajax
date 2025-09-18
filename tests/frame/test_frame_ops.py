@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import pandas as pd
-
-from datajax.frame.frame import Frame
 from datajax.api.sharding import shard
+from datajax.frame.frame import Frame
 from datajax.ir.graph import (
     AggregateStep,
     FilterStep,
@@ -28,7 +27,9 @@ def test_frame_filter_and_map(sample_frame: pd.DataFrame) -> None:
     output = aggregated.to_pandas().sort_values("user_id").reset_index(drop=True)
     pandas_filtered = sample_frame[sample_frame["qty"] > 2]
     expected = (pandas_filtered["unit_price"] * pandas_filtered["qty"]).rename("total")
-    expected = expected.groupby(pandas_filtered["user_id"]).sum().reset_index(name="total")
+    expected = (
+        expected.groupby(pandas_filtered["user_id"]).sum().reset_index(name="total")
+    )
     expected = expected.sort_values("user_id").reset_index(drop=True)
 
     pd.testing.assert_frame_equal(output, expected)

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import pandas as pd
 import pytest
-
 from datajax.frame.frame import Frame
 from datajax.runtime.bodo_plan import DataJAXPlan
 
@@ -57,7 +56,8 @@ def test_native_plan_count_dtype(sample_frame: pd.DataFrame) -> None:
     aggregates = [
         node
         for node in _collect_lazy_nodes(plan)
-        if isinstance(node, LogicalAggregate) or getattr(node, "plan_class", None) == "LogicalAggregate"
+        if isinstance(node, LogicalAggregate)
+        or getattr(node, "plan_class", None) == "LogicalAggregate"
     ]
     assert aggregates, "Expected an aggregate node in the native plan"
 

@@ -1,6 +1,16 @@
 """Top-level DataJAX package exports."""
 
-from datajax.api import DjitFunction, PartitionedFunction, Resource, ShardSpec, djit, pjit, scan, shard, vmap
+from datajax.api import (
+    DjitFunction,
+    PartitionedFunction,
+    Resource,
+    ShardSpec,
+    djit,
+    pjit,
+    scan,
+    shard,
+    vmap,
+)
 from datajax.frame import Frame
 
 __all__ = [

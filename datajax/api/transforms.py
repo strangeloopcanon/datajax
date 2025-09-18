@@ -3,24 +3,37 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Iterable, Optional, Sequence
+from typing import TYPE_CHECKING, Any
 
 from datajax.api.djit import DjitFunction
-from datajax.api.sharding import Resource, ShardSpec
-from datajax.planner.plan import ExecutionPlan
 from datajax.frame.frame import Frame
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable, Sequence
+
+    from datajax.api.sharding import Resource, ShardSpec
+    from datajax.planner.plan import ExecutionPlan
+else:
+    from collections import abc as _abc
+
+    Callable = _abc.Callable
+    Iterable = _abc.Iterable
+    Sequence = _abc.Sequence
+    Resource = ShardSpec = ExecutionPlan = Any
 
 
 @dataclass
 class PartitionedFunction:
     fn: Callable[..., Any]
-    in_shardings: Optional[ShardSpec]
-    out_shardings: Optional[ShardSpec]
-    resources: Optional[Resource]
+    in_shardings: ShardSpec | None
+    out_shardings: ShardSpec | None
+    resources: Resource | None
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         # Validate axis vs mesh early (before executing)
-        if self.out_shardings is not None and getattr(self.out_shardings, "axis", None) is not None:
+        if self.out_shardings is not None and getattr(
+            self.out_shardings, "axis", None
+        ) is not None:
             axis = self.out_shardings.axis
             if self.resources is None or not getattr(self.resources, "mesh_axes", None):
                 raise ValueError(
@@ -55,7 +68,8 @@ class PartitionedFunction:
             if record is not None and record.sharding is not None:
                 if record.sharding != self.out_shardings:
                     raise ValueError(
-                        f"Output sharding {record.sharding!r} does not match expected {self.out_shardings!r}"
+                        f"Output sharding {record.sharding!r} does not match "
+                        f"expected {self.out_shardings!r}"
                     )
         return result
 
@@ -73,7 +87,7 @@ class PartitionedFunction:
         raise TypeError("Wrapped function does not expose a lowering method")
 
     @property
-    def last_plan(self) -> Optional[ExecutionPlan]:
+    def last_plan(self) -> ExecutionPlan | None:
         base = self.fn
         if isinstance(base, DjitFunction) and base.last_execution is not None:
             return base.last_execution.plan
@@ -83,9 +97,9 @@ class PartitionedFunction:
 def pjit(
     fn: Callable[..., Any],
     *,
-    in_shardings: Optional[ShardSpec] = None,
-    out_shardings: Optional[ShardSpec] = None,
-    resources: Optional[Resource] = None,
+    in_shardings: ShardSpec | None = None,
+    out_shardings: ShardSpec | None = None,
+    resources: Resource | None = None,
 ) -> PartitionedFunction:
     """Wrap a function with sharding metadata.
 
@@ -93,14 +107,24 @@ def pjit(
     callable while preserving djit traces for offline inspection.
     """
 
-    return PartitionedFunction(fn=fn, in_shardings=in_shardings, out_shardings=out_shardings, resources=resources)
+    return PartitionedFunction(
+        fn=fn,
+        in_shardings=in_shardings,
+        out_shardings=out_shardings,
+        resources=resources,
+    )
 
 
 class VmapFunction:
     def __init__(self, fn: Callable[..., Any]):
         self._fn = fn
 
-    def __call__(self, batched: Iterable[Any], *args: Any, **kwargs: Any) -> Sequence[Any]:
+    def __call__(
+        self,
+        batched: Iterable[Any],
+        *args: Any,
+        **kwargs: Any,
+    ) -> Sequence[Any]:
         return [self._fn(item, *args, **kwargs) for item in batched]
 
 

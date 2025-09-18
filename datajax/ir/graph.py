@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Tuple
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -50,7 +50,7 @@ class LogicalExpr(Expr):
 
 @dataclass(frozen=True)
 class InputStep:
-    schema: Tuple[str, ...]
+    schema: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -75,7 +75,7 @@ class FilterStep:
 
 @dataclass(frozen=True)
 class ProjectStep:
-    columns: Tuple[str, ...]
+    columns: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -83,7 +83,7 @@ class JoinStep:
     left_on: str
     right_on: str
     how: str
-    right_columns: Tuple[str, ...]
+    right_columns: tuple[str, ...]
     right_data: Any
 
 

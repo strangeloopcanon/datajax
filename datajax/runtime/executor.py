@@ -3,16 +3,27 @@
 
 from __future__ import annotations
 
+import importlib
+import importlib.util
 import os
 import sys
 import warnings
-import importlib
-import importlib.util
 from dataclasses import dataclass
 from types import ModuleType
-from typing import Any, Callable, Optional, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from datajax.runtime import bodo_stub
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from datajax.planner.plan import ExecutionPlan
+    from datajax.runtime.bodo_plan import DataJAXPlan
+else:
+    from collections import abc as _abc
+
+    Callable = _abc.Callable
+    ExecutionPlan = DataJAXPlan = Any
 
 
 class ExecutionBackend(Protocol):
@@ -63,7 +74,8 @@ class BodoBackend:
                 if not allow_import:
                     self._available = False
                     self._error = RuntimeError(
-                        "Bodo detected but DATAJAX_ALLOW_BODO_IMPORT=1 is required to import it"
+                        "Bodo detected but DATAJAX_ALLOW_BODO_IMPORT=1 is "
+                        "required to import it"
                     )
                     self._jit = None
                     self.mode = "present_disabled"
@@ -91,13 +103,16 @@ class BackendHandle:
     source: str
 
 
-_ACTIVE_BACKEND: Optional[BackendHandle] = None
+_ACTIVE_BACKEND: BackendHandle | None = None
 
 
 def _choose_backend() -> BackendHandle:
     requested = os.environ.get("DATAJAX_EXECUTOR", "auto").lower()
     if requested not in {"auto", "bodo", "pandas"}:
-        warnings.warn(f"Unknown DATAJAX_EXECUTOR={requested!r}; defaulting to auto")
+        warnings.warn(
+            f"Unknown DATAJAX_EXECUTOR={requested!r}; defaulting to auto",
+            stacklevel=2,
+        )
         requested = "auto"
 
     if requested in {"auto", "bodo"}:
@@ -109,6 +124,7 @@ def _choose_backend() -> BackendHandle:
         warnings.warn(
             "Bodo backend unavailable; falling back to pandas executor",
             category=RuntimeWarning,
+            stacklevel=2,
         )
 
     return BackendHandle(backend=PandasBackend(), source="pandas")
@@ -130,10 +146,9 @@ def reset_backend() -> None:
     _ACTIVE_BACKEND = None
 
 
-def execute(plan: "ExecutionPlan" | "DataJAXPlan", *args, **kwargs) -> Any:
+def execute(plan: ExecutionPlan | DataJAXPlan, *args, **kwargs) -> Any:
     """Executes a plan using the active backend."""
     from datajax.runtime.bodo_plan import DataJAXPlan
-    from datajax.planner.plan import ExecutionPlan
 
     if isinstance(plan, DataJAXPlan):
         from bodo.pandas.plan import execute_plan as execute_bodo_plan

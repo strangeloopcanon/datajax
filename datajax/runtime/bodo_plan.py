@@ -1,26 +1,10 @@
 from __future__ import annotations
 
 import operator
-from typing import Sequence
-
-import pandas as pd
+from typing import TYPE_CHECKING
 
 import bodo
-from datajax.ir.graph import (
-    AggregateStep,
-    BinaryExpr,
-    ColumnRef,
-    ComparisonExpr,
-    FilterStep,
-    InputStep,
-    JoinStep,
-    LogicalExpr,
-    MapStep,
-    ProjectStep,
-    RenameExpr,
-    RepartitionStep,
-    Literal,
-)
+import pandas as pd
 from bodo.ext import plan_optimizer
 from bodo.pandas.plan import (
     AggregateExpression,
@@ -42,8 +26,34 @@ from bodo.pandas.plan import (
 )
 from bodo.pandas.utils import get_n_index_arrays
 
-from datajax.runtime.mesh import mesh_shape_from_resource, resolve_mesh_axis, rebalance_by_key
+from datajax.ir.graph import (
+    AggregateStep,
+    BinaryExpr,
+    ColumnRef,
+    ComparisonExpr,
+    FilterStep,
+    InputStep,
+    JoinStep,
+    Literal,
+    LogicalExpr,
+    MapStep,
+    ProjectStep,
+    RenameExpr,
+    RepartitionStep,
+)
+from datajax.runtime.mesh import (
+    mesh_shape_from_resource,
+    rebalance_by_key,
+    resolve_mesh_axis,
+)
 from datajax.runtime.plan_diagnostics import PlanDiagnostics
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+else:
+    from collections import abc as _abc
+
+    Sequence = _abc.Sequence
 
 
 class DataJAXPlan(LazyPlan):
@@ -97,7 +107,11 @@ class DataJAXPlan(LazyPlan):
         self._primary_axis_idx = 0
         try:
             last_spec = next(
-                (step.spec for step in reversed(trace) if isinstance(step, RepartitionStep)),
+                (
+                    step.spec
+                    for step in reversed(trace)
+                    if isinstance(step, RepartitionStep)
+                ),
                 None,
             )
             if last_spec is not None and resources is not None:
@@ -108,7 +122,11 @@ class DataJAXPlan(LazyPlan):
         plan = self._translate_trace(trace, input_df.iloc[0:0])
 
         self.final_sharding = next(
-            (step.spec for step in reversed(trace) if isinstance(step, RepartitionStep)),
+            (
+                step.spec
+                for step in reversed(trace)
+                if isinstance(step, RepartitionStep)
+            ),
             None,
         )
         self.final_schema = tuple(plan.empty_data.columns)
@@ -341,7 +359,8 @@ class DataJAXPlan(LazyPlan):
                     if axes and 0 <= axis_idx < len(axes):
                         axis_name = axes[axis_idx]
                     self.diagnostics.add(
-                        f"join: rhs_rebalanced key={step.right_on} axis={axis_name or axis_idx} shape={mesh_shape}"
+                        f"join: rhs_rebalanced key={step.right_on} "
+                        f"axis={axis_name or axis_idx} shape={mesh_shape}"
                     )
                 except Exception:
                     pass
@@ -352,7 +371,11 @@ class DataJAXPlan(LazyPlan):
                     n_cols = len(right_plan.empty_data.columns)
                     col_idx = list(range(n_cols))
                     exprs = make_col_ref_exprs(col_idx, right_plan)
-                    right_plan = LogicalProjection(right_plan.empty_data, right_plan, exprs)
+                    right_plan = LogicalProjection(
+                        right_plan.empty_data,
+                        right_plan,
+                        exprs,
+                    )
                     self.diagnostics.add("join: rhs_rebalanced (sequential no-op)")
                 except Exception:
                     pass
@@ -396,13 +419,19 @@ class DataJAXPlan(LazyPlan):
         empty_output = pd.DataFrame(output_data)
 
         exprs = make_col_ref_exprs(col_indices, join_plan)
-        return LogicalProjection(empty_output[output_columns], join_plan, exprs)
+        return LogicalProjection(
+            empty_output[output_columns],
+            join_plan,
+            exprs,
+        )
 
     def _translate_repartition_step(
         self, step: RepartitionStep, source_plan: LazyPlan
     ) -> LazyPlan:
         spec = step.spec
-        if getattr(spec, "kind", None) == "key" and getattr(spec, "key", None) is not None:
+        is_key_partition = getattr(spec, "kind", None) == "key"
+        has_key = getattr(spec, "key", None) is not None
+        if is_key_partition and has_key:
             if self.resources is None:
                 return source_plan
             try:
@@ -435,7 +464,8 @@ class DataJAXPlan(LazyPlan):
                 if axes and 0 <= axis_idx < len(axes):
                     axis_name = axes[axis_idx]
                 self.diagnostics.add(
-                    f"repartition: key={spec.key} axis={axis_name or axis_idx} shape={mesh_shape}"
+                    f"repartition: key={spec.key} "
+                    f"axis={axis_name or axis_idx} shape={mesh_shape}"
                 )
                 self._primary_axis_idx = axis_idx
                 return getattr(tmp, "_plan", tmp)
@@ -452,5 +482,5 @@ class DataJAXPlan(LazyPlan):
         )
         exprs = make_col_ref_exprs(indices, source_plan)
         projection = LogicalProjection(source_plan.empty_data, source_plan, exprs)
-        setattr(projection, "target_sharding", step.spec)
+        projection.target_sharding = step.spec
         return projection

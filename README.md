@@ -29,6 +29,39 @@ pytest -q
 
 This runs the full test suite using the pandas-based stub backend. No Bodo installation is required.
 
+### Running With Real Bodo
+
+If you have a licensed Bodo installation and want to exercise the real backend, set up the
+environment before running tests or benchmarks:
+
+```bash
+export DATAJAX_USE_BODO_STUB=0
+export DATAJAX_ALLOW_BODO_IMPORT=1
+export DATAJAX_EXECUTOR=bodo
+# Optional: enable native LazyPlan lowering instead of pandas replay
+export DATAJAX_NATIVE_BODO=1
+# Recommended when running under mpiexec
+export BODO_SPAWN_MODE=0
+```
+
+Recommended validation commands:
+
+```bash
+pytest tests/api/test_djit_pipeline.py -k bodo -vv
+pytest tests/runtime/test_bodo_plan.py -vv
+pytest tests/runtime/test_mesh_plan.py -vv
+```
+
+To benchmark the native execution path you will typically need to launch Bodo under MPI. For
+example, on a workstation with two ranks available:
+
+```bash
+mpiexec -n 2 python benchmarks/feature_pipeline.py --mode native --spmd
+```
+
+Unset `DATAJAX_NATIVE_BODO` or switch `--mode replay` if you prefer the pandas replay path compiled
+through `bodo.jit` without native LazyPlan lowering.
+
 ## Example Usage
 
 Here is a simple example of how to use `djit` to define a sharded, just-in-time compiled feature engineering pipeline.
