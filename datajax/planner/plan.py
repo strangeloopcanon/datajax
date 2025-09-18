@@ -5,9 +5,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Iterable, List, Sequence, Tuple
-
-import pandas as pd
+from typing import TYPE_CHECKING
 
 from datajax.ir.graph import (
     AggregateStep,
@@ -18,6 +16,20 @@ from datajax.ir.graph import (
     ProjectStep,
     RepartitionStep,
 )
+from datajax.planner.optimizer import optimize_trace, validate_mesh_axes
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
+
+    import pandas as pd
+else:
+    import types as _types
+    from collections import abc as _abc
+
+    Iterable = _abc.Iterable
+    Sequence = _abc.Sequence
+    pd = _types.SimpleNamespace(DataFrame=object)
+
 try:
     from datajax.runtime.bodo_plan import DataJAXPlan  # type: ignore
 except Exception:  # pragma: no cover - optional dependency
@@ -28,8 +40,8 @@ except Exception:  # pragma: no cover - optional dependency
 class Stage:
     kind: str
     steps: Sequence[object]
-    input_schema: Tuple[str, ...]
-    output_schema: Tuple[str, ...]
+    input_schema: tuple[str, ...]
+    output_schema: tuple[str, ...]
     target_sharding: object | None
 
     def describe(self) -> str:
@@ -43,11 +55,11 @@ class ExecutionPlan:
     mode: str
     stages: Sequence[Stage]
     trace: Sequence[object]
-    final_schema: Tuple[str, ...]
+    final_schema: tuple[str, ...]
     final_sharding: object | None
     resources: object | None
 
-    def describe(self) -> List[str]:
+    def describe(self) -> list[str]:
         return [stage.describe() for stage in self.stages]
 
 
@@ -69,7 +81,7 @@ def _classify_step(step: object) -> str:
     return type(step).__name__.lower()
 
 
-def _update_schema(schema: Tuple[str, ...], step: object) -> Tuple[str, ...]:
+def _update_schema(schema: tuple[str, ...], step: object) -> tuple[str, ...]:
     if isinstance(step, MapStep):
         if step.output in schema:
             return schema
@@ -87,17 +99,23 @@ def _update_schema(schema: Tuple[str, ...], step: object) -> Tuple[str, ...]:
     return schema
 
 
-def _group_into_stages(trace: Iterable[object]) -> Tuple[List[Stage], Tuple[str, ...], object | None]:
-    stages: List[Stage] = []
+def _group_into_stages(
+    trace: Iterable[object],
+) -> tuple[list[Stage], tuple[str, ...], object | None]:
+    stages: list[Stage] = []
     current_kind: str | None = None
-    current_steps: List[object] = []
-    current_schema: Tuple[str, ...] = ()
+    current_steps: list[object] = []
+    current_schema: tuple[str, ...] = ()
     current_sharding: object | None = None
-    stage_input_schema: Tuple[str, ...] = ()
+    stage_input_schema: tuple[str, ...] = ()
     stage_sharding: object | None = None
 
     def flush() -> None:
-        nonlocal current_kind, current_steps, stage_input_schema, current_schema, stage_sharding
+        nonlocal current_kind
+        nonlocal current_steps
+        nonlocal stage_input_schema
+        nonlocal current_schema
+        nonlocal stage_sharding
         if current_steps and current_kind is not None:
             stages.append(
                 Stage(
@@ -157,10 +175,13 @@ def build_plan(
     *,
     backend: str,
     mode: str,
-    input_df: pd.DataFrame = None,
+    input_df: pd.DataFrame | None = None,
     resources: object | None = None,
 ) -> ExecutionPlan | DataJAXPlan:
-    stages, final_schema, final_sharding = _group_into_stages(trace)
+    optimized_trace = optimize_trace(trace)
+    validate_mesh_axes(optimized_trace, resources)
+
+    stages, final_schema, final_sharding = _group_into_stages(optimized_trace)
 
     native_flag = os.environ.get("DATAJAX_NATIVE_BODO", "0") == "1"
     if backend == "bodo" and native_flag:
@@ -170,13 +191,13 @@ def build_plan(
             )
         if input_df is None:
             raise ValueError("input_df is required for native Bodo lowering")
-        return DataJAXPlan(trace, input_df, resources=resources)
+        return DataJAXPlan(optimized_trace, input_df, resources=resources)
 
     return ExecutionPlan(
         backend=backend,
         mode=mode,
         stages=tuple(stages),
-        trace=tuple(trace),
+        trace=tuple(optimized_trace),
         final_schema=final_schema,
         final_sharding=final_sharding,
         resources=resources,

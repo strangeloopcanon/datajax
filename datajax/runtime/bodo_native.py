@@ -12,12 +12,16 @@ helpers defined in `bodo/pandas/plan.py` and `bodo/pandas/frame.py`.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, List, Optional
+from typing import TYPE_CHECKING
 
-import pandas as pd
-
-from datajax.ir import graph
 from datajax.planner.plan import ExecutionPlan, Stage
+
+if TYPE_CHECKING:
+    import pandas as pd
+else:
+    import types as _types
+
+    pd = _types.SimpleNamespace(DataFrame=object)
 
 
 @dataclass
@@ -28,7 +32,7 @@ class NativeStage:
     description: str
 
 
-def lower_plan_to_bodo(plan: ExecutionPlan, frame: pd.DataFrame) -> List[NativeStage]:
+def lower_plan_to_bodo(plan: ExecutionPlan, frame: pd.DataFrame) -> list[NativeStage]:
     """Return a high-level lowering plan for Bodo.
 
     Parameters
@@ -59,14 +63,15 @@ def lower_plan_to_bodo(plan: ExecutionPlan, frame: pd.DataFrame) -> List[NativeS
       can be carried out on an environment where Bodo is fully available.
     """
 
-    native: List[NativeStage] = []
+    native: list[NativeStage] = []
 
     native.append(
         NativeStage(
             stage=plan.stages[0] if plan.stages else Stage("input", (), (), (), None),
             description=(
-                "Create the base LazyPlan using LogicalGetPandasReadSeq/Parallel. "
-                "Use frame.head(0) to build the schema (see bodo.pandas.base._empty_like)."
+                "Create the base LazyPlan using "
+                "LogicalGetPandasReadSeq/Parallel. Use frame.head(0) to build "
+                "the schema (see bodo.pandas.base._empty_like)."
             ),
         )
     )
@@ -77,9 +82,9 @@ def lower_plan_to_bodo(plan: ExecutionPlan, frame: pd.DataFrame) -> List[NativeS
                 NativeStage(
                     stage=stage,
                     description=(
-                        "Translate Map/Filter/Project steps into LogicalProjection/"
-                        "LogicalFilter with ColRefExpression, ArithOpExpression, and "
-                        "ComparisonOpExpression."
+                        "Translate Map/Filter/Project steps into "
+                        "LogicalProjection/LogicalFilter with ColRefExpression, "
+                        "ArithOpExpression, and ComparisonOpExpression."
                     ),
                 )
             )
@@ -109,7 +114,7 @@ def lower_plan_to_bodo(plan: ExecutionPlan, frame: pd.DataFrame) -> List[NativeS
                     stage=stage,
                     description=(
                         "Insert a repartition node (check Bodo for the appropriate "
-                        "Logical* class).  Update sharding state accordingly."
+                        "Logical* class). Update sharding state accordingly."
                     ),
                 )
             )
@@ -120,7 +125,7 @@ def lower_plan_to_bodo(plan: ExecutionPlan, frame: pd.DataFrame) -> List[NativeS
                 NativeStage(
                     stage=stage,
                     description=(
-                        "TODO: implement lowering for stage kind %s" % stage.kind
+                        f"TODO: implement lowering for stage kind {stage.kind}"
                     ),
                 )
             )

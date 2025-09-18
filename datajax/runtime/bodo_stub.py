@@ -3,7 +3,14 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any, Callable, TypeVar, overload
+from typing import TYPE_CHECKING, Any, TypeVar, overload
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+else:
+    from collections import abc as _abc
+
+    Callable = _abc.Callable
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -18,7 +25,12 @@ def jit(fn: F, *, parallel: bool | None = None, **_: Any) -> F:
     ...
 
 
-def jit(fn: F | None = None, *, parallel: bool | None = None, **_: Any) -> F | Callable[[F], F]:
+def jit(
+    fn: F | None = None,
+    *,
+    parallel: bool | None = None,
+    **_: Any,
+) -> F | Callable[[F], F]:
     """Return a decorator that behaves like bodo.jit but simply returns the input."""
 
     def decorator(inner: F) -> F:

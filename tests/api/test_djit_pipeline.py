@@ -7,7 +7,6 @@ from types import ModuleType
 
 import pandas as pd
 import pytest
-
 from datajax import Frame, Resource, djit, pjit, scan, shard, vmap
 from datajax.ir.graph import AggregateStep, InputStep, MapStep
 from datajax.runtime import executor as runtime_executor
@@ -76,7 +75,9 @@ def test_pjit_wrapper_preserves_lower(sample_frame: pd.DataFrame) -> None:
         assert any("AggregateStep" in desc for desc in plan.describe())
         assert plan.mode in {"stub", "real", "pandas"}
         assert plan.final_schema == ("user_id", "revenue")
-        transform_stage = next(stage for stage in plan.stages if stage.kind == "transform")
+        transform_stage = next(
+            stage for stage in plan.stages if stage.kind == "transform"
+        )
         assert "MapStep" in transform_stage.describe()
 
 
@@ -107,7 +108,9 @@ def test_scan_accumulates_sequence() -> None:
     assert outputs == [1, 3, 6]
 
 
-def test_executor_prefers_bodo_but_falls_back_to_pandas(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_executor_prefers_bodo_but_falls_back_to_pandas(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     runtime_executor.reset_backend()
     monkeypatch.delenv("DATAJAX_EXECUTOR", raising=False)
     monkeypatch.delenv("DATAJAX_USE_BODO_STUB", raising=False)
@@ -129,7 +132,9 @@ def test_executor_env_requires_bodo(monkeypatch: pytest.MonkeyPatch) -> None:
     runtime_executor.reset_backend()
 
 
-def test_executor_auto_falls_back_when_stub_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_executor_auto_falls_back_when_stub_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     runtime_executor.reset_backend()
     monkeypatch.setenv("DATAJAX_USE_BODO_STUB", "0")
     monkeypatch.setenv("DATAJAX_ALLOW_BODO_IMPORT", "0")
@@ -163,7 +168,9 @@ def test_bodo_stub_module_available(monkeypatch: pytest.MonkeyPatch) -> None:
     runtime_executor.reset_backend()
 
 
-def test_executor_uses_real_bodo_when_available(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_executor_uses_real_bodo_when_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     runtime_executor.reset_backend()
 
     module = ModuleType("bodo")
@@ -208,7 +215,7 @@ def test_executor_uses_real_bodo_when_available(monkeypatch: pytest.MonkeyPatch)
     backend_name = runtime_executor.active_backend_name()
     assert backend_name == "bodo"
     backend_impl = runtime_executor.get_active_backend()
-    assert getattr(backend_impl, "mode") == "real"
+    assert backend_impl.mode == "real"
 
     @djit
     def identity(df: Frame) -> Frame:
@@ -294,7 +301,10 @@ def test_pjit_shard_axis_validation_index_invalid(sample_frame: pd.DataFrame) ->
     with pytest.raises(ValueError):
         compiled(sample_frame)
 
-def test_djit_bodo_native_execution(sample_frame: pd.DataFrame, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_djit_bodo_native_execution(
+    sample_frame: pd.DataFrame,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Tests that the Bodo-native execution path is used when the backend is Bodo."""
     if os.environ.get("DATAJAX_NATIVE_BODO", "0") != "1":
         pytest.skip("Native Bodo lowering is disabled")

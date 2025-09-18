@@ -4,16 +4,24 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import wraps
-from typing import Any, Callable, Optional, Sequence
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 
-from datajax.api.sharding import Resource
 from datajax.frame.frame import Frame
-from datajax.planner.plan import ExecutionPlan, build_plan
-from datajax.runtime.bodo_pipeline import CompiledPlan, compile_plan_with_backend
-from datajax.runtime.executor import execute
-from datajax.runtime.executor import active_backend_name, get_active_backend, execute
+from datajax.planner.plan import build_plan
+from datajax.runtime.bodo_pipeline import compile_plan_with_backend
+from datajax.runtime.executor import active_backend_name, execute, get_active_backend
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+
+    from datajax.api.sharding import Resource
+    from datajax.planner.plan import ExecutionPlan
+    from datajax.runtime.bodo_pipeline import CompiledPlan
+else:
+    Callable = Sequence = Any
+    Resource = ExecutionPlan = CompiledPlan = Any
 
 
 def _wrap_arg(value: Any) -> Any:
@@ -47,21 +55,21 @@ class DjitFunction:
     def __init__(self, fn: Callable[..., Frame]):
         self._fn = fn
         self._backend = get_active_backend()
-        self._compiled: Optional[Callable[..., Any]] = None
+        self._compiled: Callable[..., Any] | None = None
         self._backend_name = active_backend_name()
         self._backend_mode = getattr(self._backend, "mode", self._backend_name)
-        self._last_execution: Optional[ExecutionRecord] = None
-        self._generated_source: Optional[str] = None
-        self._compiled_plan: Optional[CompiledPlan] = None
-        self._resources: Optional[Resource] = None
+        self._last_execution: ExecutionRecord | None = None
+        self._generated_source: str | None = None
+        self._compiled_plan: CompiledPlan | None = None
+        self._resources: Resource | None = None
         wraps(fn)(self)
 
     @property
-    def resources(self) -> Optional[Resource]:
+    def resources(self) -> Resource | None:
         return self._resources
 
     @resources.setter
-    def resources(self, value: Optional[Resource]) -> None:
+    def resources(self, value: Resource | None) -> None:
         self._resources = value
 
     def __call__(self, *args: Any, **kwargs: Any) -> Frame:
@@ -76,7 +84,7 @@ class DjitFunction:
         return result.trace
 
     @property
-    def last_execution(self) -> Optional[ExecutionRecord]:
+    def last_execution(self) -> ExecutionRecord | None:
         return self._last_execution
 
     def _call_python(self, *args: Any, **kwargs: Any) -> Frame:
@@ -140,7 +148,8 @@ class DjitFunction:
         for column in result_df.columns:
             dtype = result_df[column].dtype
             if hasattr(dtype, "pyarrow_dtype"):
-                result_df[column] = result_df[column].astype(dtype.pyarrow_dtype.to_pandas_dtype())
+                to_pandas = dtype.pyarrow_dtype.to_pandas_dtype()
+                result_df[column] = result_df[column].astype(to_pandas)
 
         result_frame = Frame(result_df, traced_result.trace, plan.final_sharding)
 

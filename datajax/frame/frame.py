@@ -4,28 +4,37 @@ from __future__ import annotations
 
 import operator
 from dataclasses import dataclass
-from typing import Iterable, List, Sequence, Union
+from typing import TYPE_CHECKING, Any, Union
 
 import pandas as pd
 
 from datajax.ir.graph import (
     AggregateStep,
     BinaryExpr,
-    ComparisonExpr,
     ColumnRef,
+    ComparisonExpr,
     Expr,
     FilterStep,
     InputStep,
     JoinStep,
-    LogicalExpr,
     Literal,
+    LogicalExpr,
     MapStep,
     ProjectStep,
-    RepartitionStep,
     RenameExpr,
+    RepartitionStep,
 )
 
-from datajax.api.sharding import ShardSpec
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
+
+    from datajax.api.sharding import ShardSpec
+else:
+    from collections import abc as _abc
+
+    Iterable = _abc.Iterable
+    Sequence = _abc.Sequence
+    ShardSpec = Any
 
 SeriesLike = Union["SeriesExpr", int, float, bool]
 
@@ -51,7 +60,7 @@ _LOGICAL_OPERATORS = {
 }
 
 
-def _ensure_expr(frame: "Frame", value: SeriesLike) -> Expr:
+def _ensure_expr(frame: Frame, value: SeriesLike) -> Expr:
     if isinstance(value, SeriesExpr):
         if value.frame is not frame:
             raise ValueError("Cannot combine SeriesExpr from different frames")
@@ -72,14 +81,24 @@ def _infer_alias(expr: Expr, fallback: str) -> str:
 class Frame:
     """A traced dataframe wrapper backed by pandas for local execution."""
 
-    def __init__(self, data: pd.DataFrame, trace: Sequence[object], sharding: ShardSpec | None = None):
+    def __init__(
+        self,
+        data: pd.DataFrame,
+        trace: Sequence[object],
+        sharding: ShardSpec | None = None,
+    ) -> None:
         self._data = data
-        self._trace: List[object] = list(trace)
+        self._trace: list[object] = list(trace)
         self.schema = tuple(data.columns)
         self._sharding = sharding
 
     @classmethod
-    def from_pandas(cls, data: pd.DataFrame, *, sharding: ShardSpec | None = None) -> Frame:
+    def from_pandas(
+        cls,
+        data: pd.DataFrame,
+        *,
+        sharding: ShardSpec | None = None,
+    ) -> Frame:
         copied = data.copy()
         return cls(copied, trace=[InputStep(tuple(copied.columns))], sharding=sharding)
 
@@ -96,7 +115,7 @@ class Frame:
 
         return self._data.copy()
 
-    def __getitem__(self, column: Union[str, "SeriesExpr"]) -> Union["SeriesExpr", "Frame"]:
+    def __getitem__(self, column: str | SeriesExpr) -> SeriesExpr | Frame:
         if isinstance(column, str):
             if column not in self._data.columns:
                 raise KeyError(column)
@@ -123,7 +142,8 @@ class Frame:
     ) -> Frame:
         new_trace = list(self._trace)
         new_trace.extend(steps)
-        return Frame(data, new_trace, sharding=sharding if sharding is not None else self._sharding)
+        sharding_value = sharding if sharding is not None else self._sharding
+        return Frame(data, new_trace, sharding=sharding_value)
 
     def _evaluate_expr(self, expr: Expr) -> pd.Series:
         if isinstance(expr, ColumnRef):
@@ -200,22 +220,25 @@ class Frame:
     def aggregate_sum(self, value: SeriesExpr, key: SeriesExpr) -> Frame:
         return self._aggregate(value, key, agg="sum")
 
-    def select(self, columns: Sequence[str]) -> "Frame":
+    def select(self, columns: Sequence[str]) -> Frame:
         desired = list(columns)
         missing = [col for col in desired if col not in self._data.columns]
         if missing:
             raise KeyError(f"Columns not found: {missing}")
         projected = self._data.loc[:, desired]
-        return self._with_appended_steps(projected, [ProjectStep(columns=tuple(desired))])
+        return self._with_appended_steps(
+            projected,
+            [ProjectStep(columns=tuple(desired))],
+        )
 
     def join(
         self,
-        other: "Frame | pd.DataFrame",
+        other: Frame | pd.DataFrame,
         *,
         on: str,
         how: str = "inner",
         suffixes: tuple[str, str] = ("_x", "_y"),
-    ) -> "Frame":
+    ) -> Frame:
         if isinstance(other, Frame):
             right_df = other.to_pandas()
         elif isinstance(other, pd.DataFrame):
@@ -238,11 +261,11 @@ class Frame:
         )
         return self._with_appended_steps(joined, [step])
 
-    def repartition(self, spec: ShardSpec) -> "Frame":
+    def repartition(self, spec: ShardSpec) -> Frame:
         step = RepartitionStep(spec=spec)
         return self._with_appended_steps(self._data.copy(), [step], sharding=spec)
 
-    def filter(self, predicate: "SeriesExpr") -> "Frame":
+    def filter(self, predicate: SeriesExpr) -> Frame:
         pred_expr = _ensure_expr(self, predicate)
         mask = self._evaluate_expr(pred_expr)
         if mask.dtype != bool:
@@ -291,7 +314,10 @@ class SeriesExpr:
 
     def __rtruediv__(self, other: SeriesLike) -> SeriesExpr:
         rhs = _ensure_expr(self.frame, other)
-        return SeriesExpr(self.frame, BinaryExpr(op="truediv", left=rhs, right=self.expr))
+        return SeriesExpr(
+            self.frame,
+            BinaryExpr(op="truediv", left=rhs, right=self.expr),
+        )
 
     def _compare(self, op: str, other: SeriesLike) -> SeriesExpr:
         rhs = _ensure_expr(self.frame, other)
@@ -315,15 +341,18 @@ class SeriesExpr:
     def __ge__(self, other: SeriesLike) -> SeriesExpr:
         return self._compare("ge", other)
 
-    def _logical(self, op: str, other: "SeriesExpr") -> "SeriesExpr":
+    def _logical(self, op: str, other: SeriesExpr) -> SeriesExpr:
         if other.frame is not self.frame:
             raise ValueError("Logical operations require Series from the same frame")
-        return SeriesExpr(self.frame, LogicalExpr(op=op, left=self.expr, right=other.expr))
+        return SeriesExpr(
+            self.frame,
+            LogicalExpr(op=op, left=self.expr, right=other.expr),
+        )
 
-    def __and__(self, other: "SeriesExpr") -> "SeriesExpr":
+    def __and__(self, other: SeriesExpr) -> SeriesExpr:
         return self._logical("and", other)
 
-    def __or__(self, other: "SeriesExpr") -> "SeriesExpr":
+    def __or__(self, other: SeriesExpr) -> SeriesExpr:
         return self._logical("or", other)
 
 

@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
-from typing import Iterable, Sequence
+from typing import TYPE_CHECKING, Any
 
-import pandas as pd
-
-from datajax.planner.plan import ExecutionPlan, Stage
 from datajax.runtime import bodo_codegen
+
+if TYPE_CHECKING:
+    import pandas as pd
+
+    from datajax.planner.plan import ExecutionPlan, Stage
+else:
+    import types as _types
+
+    pd = _types.SimpleNamespace(DataFrame=object)
+    ExecutionPlan = Stage = Any
 
 
 def _run_transform_stage(frame: pd.DataFrame, stage: Stage) -> pd.DataFrame:
@@ -37,7 +44,12 @@ def _run_aggregate_stage(frame: pd.DataFrame, stage: Stage) -> pd.DataFrame:
     return expr_fn(frame)
 
 
-def execute_plan(plan: ExecutionPlan, *, frame: pd.DataFrame, backend_mode: str) -> pd.DataFrame:
+def execute_plan(
+    plan: ExecutionPlan,
+    *,
+    frame: pd.DataFrame,
+    backend_mode: str,
+) -> pd.DataFrame:
     current = frame
     for stage in plan.stages:
         if stage.kind == "transform":

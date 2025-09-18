@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Iterable, Sequence, Tuple
+from typing import TYPE_CHECKING
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+else:
+    from collections import abc as _abc
+
+    Sequence = _abc.Sequence
 
 
 def mesh_shape_from_resource(resources, world_size: int) -> tuple[int, ...]:
@@ -42,7 +48,9 @@ def resolve_mesh_axis(axis: str | int | None, resources, default: int = 0) -> in
         if not axes:
             return max(0, axis)
         if axis < 0 or axis >= len(axes):
-            raise ValueError(f"Axis index {axis} is out of range for mesh axes {axes!r}")
+            raise ValueError(
+                f"Axis index {axis} is out of range for mesh axes {axes!r}"
+            )
         return axis
     if isinstance(axis, str):
         if axis not in axes:
@@ -83,7 +91,12 @@ def compute_destinations_for_mesh(
     return dests.astype(np.int32)
 
 
-def compute_destinations_by_key(df, key: str, mesh_shape: Sequence[int], axis_index: int) -> np.ndarray:
+def compute_destinations_by_key(
+    df,
+    key: str,
+    mesh_shape: Sequence[int],
+    axis_index: int,
+) -> np.ndarray:
     import pandas as pd
 
     hashed = pd.util.hash_pandas_object(df[key], index=False).to_numpy(dtype=np.uint64)
@@ -103,4 +116,3 @@ def rebalance_by_key(df, key: str, mesh_shape: Sequence[int], axis_index: int = 
 
     dests = compute_destinations_by_key(df, key, mesh_shape, axis_index)
     return distributed_api.rebalance(df, dests=dests)
-

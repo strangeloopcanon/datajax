@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Tuple
 
 
 @dataclass(frozen=True)
 class Resource:
-    mesh_axes: Tuple[str, ...]
+    mesh_axes: tuple[str, ...]
     world_size: int
 
 
