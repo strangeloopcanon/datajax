@@ -1,5 +1,10 @@
 # DataJAX (prototype)
 
+[![PyPI version](https://img.shields.io/pypi/v/datajax.svg)](https://pypi.org/project/datajax/)
+[![Python versions](https://img.shields.io/pypi/pyversions/datajax.svg)](https://pypi.org/project/datajax/)
+[![License](https://img.shields.io/pypi/l/datajax.svg)](https://pypi.org/project/datajax/)
+[![Release](https://img.shields.io/github/v/release/strangeloopcanon/datajax)](https://github.com/strangeloopcanon/datajax/releases)
+
 DataJAX explores how to bring JAX-style program transforms (`djit`, `vmap`, `pjit`, `scan`) to tabular workloads by leaning on [Bodo](https://github.com/bodo-ai/Bodo)'s SPMD compiler. The goal is a “JAX for data” experience: trace pandas-like code, optimise it, and run it across a cluster with predictable sharding semantics.
 
 - **Why**: JAX offers composable transforms for array workloads. Applying the same abstractions to tabular data unlocks the ability to stage DataFrame pipelines, reason about sharding, and target high-performance distributed runtimes.
@@ -23,18 +28,28 @@ DataJAX works in three stages:
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install datajax  # or: pip install -e .[dev] inside this repo
+pip install datajax
+
+# Try the CLIs
 datajax-export-wavespec --help
-pytest -q
+datajax-replay-tuner --help
 ```
 
-The published wheel installs the pandas-backed stub by default so you can experiment immediately. Running `pip install -e .[dev]` from a clone installs developer tooling (pytest, ruff, pyright) in editable mode.
+- The published wheel installs the pandas-backed stub by default so you can experiment immediately.
+- For development with tests and static checks, install from source: `pip install -e .[dev]`.
 
-The CLI entry points expose the offline tooling directly:
+Quick CLI examples:
 
 ```bash
-datajax-export-wavespec --logs my_logs.parquet --key user_id --out wavespec.json
-datajax-replay-tuner --trace trace.json --sample sample.parquet --out policy.json
+datajax-export-wavespec \
+  --logs my_logs.parquet \
+  --key user_id \
+  --out wavespec.json
+
+datajax-replay-tuner \
+  --trace trace.json \
+  --sample sample.parquet \
+  --out policy.json
 ```
 
 Both commands work in stub mode; provide optional runtime counters via `DATAJAX_RUNTIME_METRICS` when replaying real traces.
@@ -149,3 +164,9 @@ datajax/
 tests/            # Pytest suite
 docs/             # Roadmap and development notes
 ```
+
+## Releases
+
+- Latest release: see GitHub releases and PyPI
+  - https://github.com/strangeloopcanon/datajax/releases
+  - https://pypi.org/project/datajax/
