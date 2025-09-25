@@ -149,7 +149,7 @@ Our immediate focus is on hardening the prototype and moving towards a polished 
     - Improve plan introspection, profiling, and error reporting.
     - Expand CI to cover MPI environments and performance regressions.
 
-For more detail, see the contributor guidelines (`AGENTS.md`), the development plan (`docs/development_plan.md`), and the offline intelligence guide (`docs/offline_intelligence.md`).
+For more detail, see the contributor guidelines (`AGENTS.md`), the development plan (`docs/development_plan.md`), the native Bodo plan details (`docs/native_plan.md`), and the offline intelligence guide (`docs/offline_intelligence.md`).
 
 ## Repository Layout
 
