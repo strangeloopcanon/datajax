@@ -23,11 +23,21 @@ DataJAX works in three stages:
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -e .[dev]
+pip install datajax  # or: pip install -e .[dev] inside this repo
+datajax-export-wavespec --help
 pytest -q
 ```
 
-This runs the full test suite using the pandas-based stub backend. No Bodo installation is required.
+The published wheel installs the pandas-backed stub by default so you can experiment immediately. Running `pip install -e .[dev]` from a clone installs developer tooling (pytest, ruff, pyright) in editable mode.
+
+The CLI entry points expose the offline tooling directly:
+
+```bash
+datajax-export-wavespec --logs my_logs.parquet --key user_id --out wavespec.json
+datajax-replay-tuner --trace trace.json --sample sample.parquet --out policy.json
+```
+
+Both commands work in stub mode; provide optional runtime counters via `DATAJAX_RUNTIME_METRICS` when replaying real traces.
 
 ### Running With Real Bodo
 
@@ -124,7 +134,7 @@ Our immediate focus is on hardening the prototype and moving towards a polished 
     - Improve plan introspection, profiling, and error reporting.
     - Expand CI to cover MPI environments and performance regressions.
 
-For more detail, see the contributor guidelines (`AGENTS.md`) and the development plan (`docs/development_plan.md`).
+For more detail, see the contributor guidelines (`AGENTS.md`), the development plan (`docs/development_plan.md`), and the offline intelligence guide (`docs/offline_intelligence.md`).
 
 ## Repository Layout
 
