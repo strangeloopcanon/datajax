@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import json
+import os
 from dataclasses import dataclass
 from functools import wraps
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 
 from datajax.frame.frame import Frame
+from datajax.planner.metrics import estimate_plan_metrics, merge_runtime_counters
 from datajax.planner.plan import build_plan
 from datajax.runtime.bodo_pipeline import compile_plan_with_backend
 from datajax.runtime.executor import active_backend_name, execute, get_active_backend
@@ -87,8 +91,67 @@ class DjitFunction:
     def last_execution(self) -> ExecutionRecord | None:
         return self._last_execution
 
+    def _sample_dataframe(self, args: tuple[Any, ...]) -> pd.DataFrame | None:
+        if not args:
+            return None
+        first = args[0]
+        if isinstance(first, Frame):
+            return first.to_pandas()
+        if isinstance(first, pd.DataFrame):
+            return first
+        return None
+
+    def _ensure_plan_metrics(
+        self,
+        plan: Any,
+        *,
+        sample_df: pd.DataFrame | None,
+    ) -> Any:
+        metrics = getattr(plan, "metrics", None)
+        if metrics is None:
+            proxy = SimpleNamespace(
+                stages=getattr(plan, "stages", ()),
+                trace=tuple(getattr(plan, "trace", ())),
+                resources=getattr(plan, "resources", None),
+            )
+            try:
+                metrics = estimate_plan_metrics(proxy, sample_df=sample_df)
+            except Exception:
+                metrics = None
+        return metrics
+
+    def _runtime_counters_from_env(self) -> dict[str, Any] | None:
+        path = os.environ.get("DATAJAX_RUNTIME_METRICS")
+        if not path:
+            return None
+        try:
+            if path.strip().startswith("{"):
+                return json.loads(path)
+            with open(path, encoding="utf-8") as fh:
+                return json.load(fh)
+        except Exception:
+            return None
+
+    def _apply_runtime_metrics(
+        self,
+        plan: Any,
+        *,
+        sample_df: pd.DataFrame | None,
+    ) -> None:
+        metrics = self._ensure_plan_metrics(plan, sample_df=sample_df)
+        if metrics is None:
+            return
+        counters = self._runtime_counters_from_env()
+        if not counters:
+            return
+        try:
+            merge_runtime_counters(metrics, counters)
+        except Exception:
+            return
+
     def _call_python(self, *args: Any, **kwargs: Any) -> Frame:
         self._compiled_plan = None
+        sample_df = self._sample_dataframe(args)
         wrapped_args = tuple(_wrap_arg(arg) for arg in args)
         wrapped_kwargs = {key: _wrap_arg(value) for key, value in kwargs.items()}
         if self._backend_mode in {"stub", "pandas"}:
@@ -103,14 +166,16 @@ class DjitFunction:
             mode=self._backend_mode,
             resources=self._resources,
         )
-        materialized = Frame(result.to_pandas(), result.trace, plan.final_sharding)
+        self._apply_runtime_metrics(plan, sample_df=sample_df)
+        final_sharding = getattr(plan, "final_sharding", None)
+        materialized = Frame(result.to_pandas(), result.trace, final_sharding)
         self._last_execution = ExecutionRecord(
             trace=result.trace,
             output=materialized,
             backend=self._backend_name,
             plan=plan,
             backend_mode=self._backend_mode,
-            sharding=plan.final_sharding,
+            sharding=final_sharding,
             resources=self._resources,
         )
         return materialized
@@ -151,7 +216,9 @@ class DjitFunction:
                 to_pandas = dtype.pyarrow_dtype.to_pandas_dtype()
                 result_df[column] = result_df[column].astype(to_pandas)
 
-        result_frame = Frame(result_df, traced_result.trace, plan.final_sharding)
+        final_sharding = getattr(plan, "final_sharding", None)
+        self._apply_runtime_metrics(plan, sample_df=input_df)
+        result_frame = Frame(result_df, traced_result.trace, final_sharding)
 
         self._last_execution = ExecutionRecord(
             trace=traced_result.trace,
@@ -159,7 +226,7 @@ class DjitFunction:
             backend=self._backend_name,
             plan=plan,
             backend_mode=self._backend_mode,
-            sharding=plan.final_sharding,
+            sharding=final_sharding,
             resources=self._resources,
         )
         return result_frame

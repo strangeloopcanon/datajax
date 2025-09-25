@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import sys
 from types import ModuleType
@@ -245,6 +246,38 @@ def test_pjit_sharding_validation(sample_frame: pd.DataFrame) -> None:
     assert plan is not None
     if hasattr(plan, "final_sharding"):
         assert plan.final_sharding == spec
+
+
+def test_runtime_metrics_env_merges(tmp_path, sample_frame: pd.DataFrame) -> None:
+    metrics_path = tmp_path / "metrics.json"
+    metrics_payload = {
+        "bytes_moved": 1000,
+        "shuffle_bytes": 250,
+        "wgmma_occupancy": 0.8,
+        "notes": ["profiling"]
+    }
+    metrics_path.write_text(json.dumps(metrics_payload), encoding="utf-8")
+
+    os.environ["DATAJAX_RUNTIME_METRICS"] = str(metrics_path)
+
+    @djit
+    def repartition_fn(df: Frame) -> Frame:
+        spec = shard.by_key("user_id")
+        return df.repartition(spec)
+
+    result = repartition_fn(sample_frame)
+    assert isinstance(result, Frame)
+    record = repartition_fn.last_execution
+    assert record is not None
+    plan = record.plan
+    metrics = getattr(plan, "metrics", None)
+    assert metrics is not None
+    assert metrics.runtime_input_bytes == 1000
+    assert metrics.runtime_shuffle_bytes == 250
+    assert metrics.runtime_wgmma_occupancy == 0.8
+    assert metrics.runtime_notes == ["profiling"]
+
+    os.environ.pop("DATAJAX_RUNTIME_METRICS", None)
 
 
 def test_pjit_sharding_mismatch_raises(sample_frame: pd.DataFrame) -> None:

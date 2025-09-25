@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 from datajax.ir.graph import (
@@ -16,6 +17,7 @@ from datajax.ir.graph import (
     ProjectStep,
     RepartitionStep,
 )
+from datajax.planner.metrics import PlanMetrics, estimate_plan_metrics
 from datajax.planner.optimizer import optimize_trace, validate_mesh_axes
 
 if TYPE_CHECKING:
@@ -58,6 +60,7 @@ class ExecutionPlan:
     final_schema: tuple[str, ...]
     final_sharding: object | None
     resources: object | None
+    metrics: PlanMetrics | None = None
 
     def describe(self) -> list[str]:
         return [stage.describe() for stage in self.stages]
@@ -193,7 +196,20 @@ def build_plan(
             raise ValueError("input_df is required for native Bodo lowering")
         return DataJAXPlan(optimized_trace, input_df, resources=resources)
 
-    return ExecutionPlan(
+    # Pre-compute optional metrics using a lightweight plan-like object
+    try:
+        metrics = estimate_plan_metrics(
+            SimpleNamespace(
+                stages=tuple(stages),
+                trace=tuple(optimized_trace),
+                resources=resources,
+            ),
+            sample_df=input_df,
+        )
+    except Exception:
+        metrics = None
+
+    plan = ExecutionPlan(
         backend=backend,
         mode=mode,
         stages=tuple(stages),
@@ -201,7 +217,9 @@ def build_plan(
         final_schema=final_schema,
         final_sharding=final_sharding,
         resources=resources,
+        metrics=metrics,
     )
+    return plan
 
 
 __all__ = ["ExecutionPlan", "Stage", "build_plan"]
