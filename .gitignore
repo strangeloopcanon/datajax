@@ -35,7 +35,10 @@ m_next.json
 # Project-local docs (do not commit)
 # Keep these local or move details into docs/
 idea.md
+plan.md
 AGENTS.md
+.beads/
+
 
 # Generated logs and segments
 logs/

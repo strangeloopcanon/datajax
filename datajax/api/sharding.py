@@ -9,6 +9,9 @@ from dataclasses import dataclass
 class Resource:
     mesh_axes: tuple[str, ...]
     world_size: int
+    axis_sizes: tuple[int, ...] | None = None
+    devices: tuple[int, ...] | None = None
+    annotations: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)

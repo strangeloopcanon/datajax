@@ -35,7 +35,7 @@ datajax-export-wavespec --help
 datajax-replay-tuner --help
 ```
 
-- The published wheel installs the pandas-backed stub by default so you can experiment immediately.
+- The published wheel includes the pandas-backed stub for quick experiments; flip the flags below to execute against real Bodo DataFrames.
 - For development with tests and static checks, install from source: `pip install -e .[dev]`.
 
 Quick CLI examples:
@@ -56,8 +56,8 @@ Both commands work in stub mode; provide optional runtime counters via `DATAJAX_
 
 ### Running With Real Bodo
 
-If you have a licensed Bodo installation and want to exercise the real backend, set up the
-environment before running tests or benchmarks:
+Production runs target the real Bodo backend, so set up the environment before running tests or
+benchmarks:
 
 ```bash
 export DATAJAX_USE_BODO_STUB=0
@@ -86,6 +86,62 @@ mpiexec -n 2 python benchmarks/feature_pipeline.py --mode native --spmd
 
 Unset `DATAJAX_NATIVE_BODO` or switch `--mode replay` if you prefer the pandas replay path compiled
 through `bodo.jit` without native LazyPlan lowering.
+
+### Experimental TPU/JAX Lowering
+
+DataJAX can translate an `ExecutionPlan` into a JAX callable so you can integrate with TPU backends
+such as `tpu-inference` or `vllm-tpu`. Install the optional extras and then lower a pipeline via
+`pjit(...).lower_to_jax()`.
+
+```bash
+pip install .[tpu]
+```
+
+```python
+import pandas as pd
+from datajax.api import djit, pjit, shard
+from datajax.api.sharding import Resource
+from datajax.jax_bridge import dataframe_to_device_arrays
+
+
+@djit
+def filter_positive(frame):
+    filtered = frame.filter(frame.value > 0)
+    return filtered.select(("user_id", "value"))
+
+
+pipeline = pjit(
+    filter_positive,
+    out_shardings=shard.by_key("user_id"),
+    resources=Resource(mesh_axes=("rows",), world_size=8),
+)
+
+df = pd.DataFrame({"user_id": [1, 2, 1], "value": [-1, 2, 3]})
+lowered = pipeline.lower_to_jax(df)
+
+arrays = dataframe_to_device_arrays(df)
+jitted = lowered.jit(in_shardings=lowered.in_spec, out_shardings=lowered.out_spec)
+result_arrays = jitted(arrays)
+```
+
+```python
+from datajax.jax_bridge import build_tpu_model_definition
+
+model_def = build_tpu_model_definition(
+    lowered,
+    model_id="datajax/demo",
+    metadata={"notes": "prefix-cache-hints"},
+)
+```
+
+This definition can be handed to a TPU registry (for example,
+`tpu_inference.models.common.model_loader.register_model`) when running on
+actual hardware.
+
+The bridge currently supports filter/project traces, `groupby` reductions (`sum`, `count`, `mean`,
+`min`, `max`), and inner hash joins while capturing sharding metadata (mesh, partition specs).
+Follow-up work will add ragged prefill metadata so the lowered plan can exercise TPU-optimised
+kernels such as Ragged Paged Attention v3.
 
 ## Example Usage
 

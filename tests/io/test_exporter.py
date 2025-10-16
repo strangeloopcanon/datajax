@@ -6,7 +6,9 @@ from datajax.io.exporter import (
     build_prefix_cohorts,
     coalesce_kv_extents,
     export_wave_spec,
+    prefix_depth_histogram,
     suggest_pack_order_from_usage,
+    summarise_numeric_column,
     to_dlpack_columns,
 )
 
@@ -57,6 +59,10 @@ def test_pack_order_and_wave_spec(tmp_path):
     assert spec["pack_order"] == order
     assert spec["meta"]["row_count"] == len(df)
     assert spec["meta"]["approx_bytes"] == df["size"].sum()
+    assert spec["meta"]["key_column"] == "key"
+    assert spec["meta"]["size_column"] == "size"
+    assert "prefix_histogram" in spec
+    assert spec["meta"]["chunk_len_summary"] == {}
     assert spec["cohorts"]
     assert spec["extents"]
 
@@ -75,6 +81,28 @@ def test_export_wave_spec_reads_csv(tmp_path):
     csv_path = tmp_path / "logs.csv"
     csv_path.write_text("key,size\na,1\nb,2\n", encoding="utf-8")
     df = pd.read_csv(csv_path)
-    spec = export_wave_spec(df, key_col="key", size_col="size")
+    spec = export_wave_spec(
+        df,
+        key_col="key",
+        size_col="size",
+        chunk_len_col=None,
+        window_col=None,
+    )
     assert spec["meta"]["row_count"] == 2
     assert spec["meta"]["approx_bytes"] == 3
+    assert spec["prefix_histogram"]["1"] >= 1
+
+
+def test_prefix_histogram_and_numeric_summary():
+    df = pd.DataFrame(
+        {
+            "key": ["aaa", "aab", "bb1", "bb2"],
+            "chunk": [8, 16, 32, 64],
+        }
+    )
+    histogram = prefix_depth_histogram(df, key_col="key", max_depth=2)
+    assert set(histogram) == {"1", "2"}
+    assert histogram["2"] >= histogram["1"] >= 1
+    summary = summarise_numeric_column(df["chunk"])
+    assert summary["count"] == float(len(df))
+    assert summary["max"] == float(64)

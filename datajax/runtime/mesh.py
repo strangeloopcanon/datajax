@@ -19,9 +19,21 @@ def mesh_shape_from_resource(resources, world_size: int) -> tuple[int, ...]:
 
     try:
         axes = tuple(getattr(resources, "mesh_axes", ()) or ())
+        axis_sizes = getattr(resources, "axis_sizes", None)
     except Exception:
         axes = ()
+        axis_sizes = None
 
+    if axis_sizes:
+        shape = tuple(int(s) for s in axis_sizes)
+        total = 1
+        for size in shape:
+            total *= max(size, 1)
+        if total != int(world_size):
+            raise ValueError(
+                f"Resource axis_sizes={shape} does not multiply to world_size={world_size}"
+            )
+        return shape
     if not axes or len(axes) == 1:
         return (int(world_size),)
 
