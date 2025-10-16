@@ -77,6 +77,45 @@ def build_prefix_cohorts(
     return out
 
 
+def prefix_depth_histogram(
+    logs: pd.DataFrame,
+    *,
+    key_col: str,
+    max_depth: int,
+) -> dict[str, int]:
+    """Return unique prefix counts per depth up to `max_depth`."""
+
+    if max_depth <= 0:
+        return {}
+    if key_col not in logs.columns:
+        raise KeyError(f"Missing key column {key_col!r}")
+    hashed = pd.util.hash_pandas_object(logs[key_col], index=False).astype("uint64")
+    prefixes = hashed.apply(lambda x: f"{x:016x}")
+    histogram: dict[str, int] = {}
+    for depth in range(1, max_depth + 1):
+        segment = prefixes.str.slice(0, depth)
+        histogram[str(depth)] = int(segment.nunique())
+    return histogram
+
+
+def summarise_numeric_column(series: pd.Series) -> dict[str, float]:
+    """Produce lightweight summary stats suited for chunk/window metadata."""
+
+    numeric = pd.to_numeric(series, errors="coerce").dropna()
+    if numeric.empty:
+        return {}
+    percentiles = numeric.quantile([0.25, 0.5, 0.75, 0.9, 0.99])
+    summary = {
+        "count": float(len(numeric)),
+        "mean": float(numeric.mean()),
+        "std": float(numeric.std(ddof=0)),
+        "min": float(numeric.min()),
+        "max": float(numeric.max()),
+    }
+    summary.update({f"p{int(p * 100)}": float(v) for p, v in percentiles.items()})
+    return summary
+
+
 def coalesce_kv_extents(
     logs: pd.DataFrame | Iterable[Any],
     *,
@@ -164,6 +203,8 @@ def export_wave_spec(
     page_bits: int = 20,
     top_k_prefixes: int | None = 64,
     usage_counts: Mapping[str, int] | None = None,
+    chunk_len_col: str | None = None,
+    window_col: str | None = None,
 ) -> dict[str, Any]:
     """Build a WaveSpec-like dictionary from access logs.
 
@@ -190,6 +231,17 @@ def export_wave_spec(
             approx_bytes = int(logs[size_col].astype("int64").sum())
         except Exception:
             approx_bytes = None
+    prefix_hist = prefix_depth_histogram(
+        logs,
+        key_col=key_col,
+        max_depth=max(1, int(prefix_len)),
+    )
+    chunk_stats = {}
+    if chunk_len_col and chunk_len_col in logs.columns:
+        chunk_stats = summarise_numeric_column(logs[chunk_len_col])
+    window_stats = {}
+    if window_col and window_col in logs.columns:
+        window_stats = summarise_numeric_column(logs[window_col])
 
     return {
         "pack_order": pack_order,
@@ -199,7 +251,15 @@ def export_wave_spec(
             "page_bits": int(page_bits),
             "row_count": int(len(logs)),
             "approx_bytes": approx_bytes,
+            "key_column": key_col,
+            "size_column": size_col,
+            "prefix_len": int(prefix_len),
+            "chunk_len_column": chunk_len_col,
+            "chunk_len_summary": chunk_stats,
+            "window_column": window_col,
+            "window_summary": window_stats,
         },
+        "prefix_histogram": prefix_hist,
     }
 
 
@@ -207,6 +267,8 @@ __all__ = [
     "PrefixCohort",
     "KVExtent",
     "build_prefix_cohorts",
+    "prefix_depth_histogram",
+    "summarise_numeric_column",
     "coalesce_kv_extents",
     "suggest_pack_order_from_usage",
     "to_dlpack_columns",

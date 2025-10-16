@@ -5,13 +5,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+import pandas as pd
+
 from datajax.api.djit import DjitFunction
 from datajax.frame.frame import Frame
+from datajax.jax_bridge import lower_plan_to_jax
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Sequence
 
     from datajax.api.sharding import Resource, ShardSpec
+    from datajax.jax_bridge import LoweredPlan
     from datajax.planner.plan import ExecutionPlan
 else:
     from collections import abc as _abc
@@ -20,6 +24,7 @@ else:
     Iterable = _abc.Iterable
     Sequence = _abc.Sequence
     Resource = ShardSpec = ExecutionPlan = Any
+    LoweredPlan = Any
 
 
 @dataclass
@@ -92,6 +97,46 @@ class PartitionedFunction:
         if isinstance(base, DjitFunction) and base.last_execution is not None:
             return base.last_execution.plan
         return None
+
+    def lower_to_jax(
+        self,
+        *args: Any,
+        sample_df: Any | None = None,
+        mesh_devices: Sequence[Any] | None = None,
+        **kwargs: Any,
+    ) -> LoweredPlan:
+        """Execute (if necessary) and translate the plan into a JAX lowering."""
+
+        base = self.fn
+        if not isinstance(base, DjitFunction):
+            raise TypeError("lower_to_jax requires a djit-compiled function")
+
+        record = base.last_execution
+        if record is None:
+            self(*args, **kwargs)
+            record = base.last_execution
+        if record is None:
+            raise RuntimeError("Failed to capture execution trace for JAX lowering")
+
+        plan = record.plan
+        sample = sample_df
+        if sample is None and args:
+            candidate = args[0]
+            if isinstance(candidate, Frame):
+                sample = candidate.to_pandas()
+            elif isinstance(candidate, pd.DataFrame):
+                sample = candidate
+        if sample is None:
+            sample = record.output.to_pandas()
+        resources = self.resources or record.resources
+        shard_spec = self.out_shardings or record.sharding
+        return lower_plan_to_jax(
+            plan,
+            sample_df=sample,
+            resources=resources,
+            shard_spec=shard_spec,
+            mesh_devices=mesh_devices,
+        )
 
 
 def pjit(

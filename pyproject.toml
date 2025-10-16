@@ -46,6 +46,13 @@ dev = [
   "pyright>=1.1",
   "mypy>=1.8",
 ]
+tpu = [
+  "jax>=0.4.33",
+  "jaxlib>=0.4.33",
+  "tpu-inference>=0.1.0",
+  "torchax>=0.1.0",
+  "vllm-tpu>=0.1.0",
+]
 
 [tool.python]
 path = ["datajax"]
