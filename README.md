@@ -1,9 +1,8 @@
 # DataJAX (prototype)
 
 [![PyPI version](https://img.shields.io/pypi/v/datajax.svg)](https://pypi.org/project/datajax/)
-[![Python versions](https://img.shields.io/pypi/pyversions/datajax.svg)](https://pypi.org/project/datajax/)
-[![License](https://img.shields.io/pypi/l/datajax.svg)](https://pypi.org/project/datajax/)
 [![Release](https://img.shields.io/github/v/release/strangeloopcanon/datajax)](https://github.com/strangeloopcanon/datajax/releases)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/strangeloopcanon/datajax)
 
 DataJAX explores how to bring JAX-style program transforms (`djit`, `vmap`, `pjit`, `scan`) to tabular workloads by leaning on [Bodo](https://github.com/bodo-ai/Bodo)'s SPMD compiler. The goal is a “JAX for data” experience: trace pandas-like code, optimise it, and run it across a cluster with predictable sharding semantics.
 
