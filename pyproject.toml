@@ -81,6 +81,8 @@ line-ending = "lf"
 [tool.pyright]
 include = ["datajax"]
 typeCheckingMode = "standard"
+venvPath = "."
+venv = ".venv"
 reportMissingTypeStubs = "warning"
 
 [tool.pytest.ini_options]

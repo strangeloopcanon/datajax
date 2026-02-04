@@ -16,7 +16,7 @@ else:  # pragma: no cover
     Callable = Mapping = MutableMapping = Sequence = LoweredPlan = Any
 
 try:  # pragma: no cover - optional dependency
-    import jax.numpy as jnp
+    import jax.numpy as jnp  # pyright: ignore[reportMissingImports]
 except ImportError:  # pragma: no cover - surfaced at runtime
     jnp = None  # type: ignore[assignment]
 

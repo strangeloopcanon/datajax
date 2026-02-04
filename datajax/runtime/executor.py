@@ -151,7 +151,15 @@ def execute(plan: ExecutionPlan | DataJAXPlan, *args, **kwargs) -> Any:
     from datajax.runtime.bodo_plan import DataJAXPlan
 
     if isinstance(plan, DataJAXPlan):
-        from bodo.pandas.plan import execute_plan as execute_bodo_plan
+        try:
+            from bodo.pandas.plan import (  # pyright: ignore[reportMissingImports]
+                execute_plan as execute_bodo_plan,
+            )
+        except ImportError as exc:
+            raise RuntimeError(
+                "Bodo is not installed; install the optional dependency group "
+                "'.[bodo]' to execute DataJAXPlan objects."
+            ) from exc
 
         return execute_bodo_plan(plan)
 

@@ -28,7 +28,6 @@ from datajax.runtime.mesh import (
 from datajax.runtime.plan_diagnostics import PlanDiagnostics
 
 _BODO_IMPORT_ERROR: Exception | None
-LazyPlan: type[Any]
 
 LazyPlanLike: TypeAlias = Any
 
@@ -57,7 +56,10 @@ try:  # pragma: no cover - optional dependency
 except Exception as exc:  # pragma: no cover - optional dependency
     bodo = None  # type: ignore[assignment]
     plan_optimizer = None  # type: ignore[assignment]
-    LazyPlan = object  # type: ignore[assignment]
+
+    class LazyPlan:  # pragma: no cover
+        pass
+
     _BODO_STUB = cast("Any", object)
     (
         AggregateExpression,
@@ -89,7 +91,7 @@ else:
     Sequence = _abc.Sequence
 
 
-class DataJAXPlan(LazyPlan):
+class DataJAXPlan(cast("type[Any]", LazyPlan)):
     """Translate DataJAX IR steps into Bodo LazyPlan nodes."""
 
     _ARITH_OPS = {

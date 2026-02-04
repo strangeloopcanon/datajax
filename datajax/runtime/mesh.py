@@ -120,7 +120,13 @@ def compute_destinations_by_key(
 def rebalance_by_key(df, key: str, mesh_shape: Sequence[int], axis_index: int = 0):
     """Rebalance a pandas DataFrame by hashed key for the given mesh layout."""
 
-    from bodo.libs import distributed_api
+    try:
+        from bodo.libs import distributed_api  # pyright: ignore[reportMissingImports]
+    except ImportError as exc:
+        raise RuntimeError(
+            "Bodo is not installed; install the optional dependency group "
+            "'.[bodo]' to use mesh-aware repartitioning."
+        ) from exc
 
     total = 1
     for s in mesh_shape:
