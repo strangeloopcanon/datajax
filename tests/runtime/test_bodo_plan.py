@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 import pytest
+
 from datajax.frame.frame import Frame
 from datajax.runtime.bodo_plan import DataJAXPlan
 

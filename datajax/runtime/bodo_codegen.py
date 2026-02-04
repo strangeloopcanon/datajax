@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pandas as pd
 
@@ -23,10 +23,11 @@ from datajax.ir.graph import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Callable, Iterable
 else:
     from collections import abc as _abc
 
+    Callable = _abc.Callable
     Iterable = _abc.Iterable
 
 _BINARY_SYMBOLS = {
@@ -86,7 +87,7 @@ def generate_bodo_callable(
     trace: Iterable[object],
     *,
     reuse_namespace: dict[str, object] | None = None,
-):
+) -> tuple[Callable[[pd.DataFrame], pd.DataFrame], str, dict[str, object]]:
     """Return a Python function that executes the trace using pandas ops."""
 
     lines: list[str] = ["def _datajax_bodo_impl(frame):", "    frame = frame.copy()"]
@@ -101,13 +102,17 @@ def generate_bodo_callable(
             predicate_code = _expr_to_code(step.predicate)
             lines.append(f"    frame = frame.loc[{predicate_code}]")
         elif isinstance(step, AggregateStep):
-            key = step.key_alias
-            value = step.value_alias
-            aggregation = (
-                f"    frame = frame.groupby({key!r}, as_index=False)"
-                f"[[{value!r}]].agg({{{value!r}: 'sum'}})"
+            agg = step.agg
+            if agg not in {"sum", "count", "mean", "min", "max"}:
+                raise ValueError(f"Unsupported aggregate op for codegen: {agg!r}")
+            key_code = _expr_to_code(step.key)
+            value_code = _expr_to_code(step.value)
+            lines.append(f"    frame[{step.key_alias!r}] = {key_code}")
+            lines.append(f"    frame[{step.value_alias!r}] = {value_code}")
+            lines.append(
+                f"    frame = frame.groupby({step.key_alias!r}, as_index=False)"
+                f"[[{step.value_alias!r}]].agg({{{step.value_alias!r}: {agg!r}}})"
             )
-            lines.append(aggregation)
         elif isinstance(step, InputStep):
             continue
         elif isinstance(step, ProjectStep):
@@ -129,7 +134,10 @@ def generate_bodo_callable(
     namespace: dict[str, object] = {"pd": pd}
     namespace.update(constants)
     exec(source, namespace, namespace)
-    impl = namespace["_datajax_bodo_impl"]
+    impl = cast(
+        "Callable[[pd.DataFrame], pd.DataFrame]",
+        namespace["_datajax_bodo_impl"],
+    )
     namespace.pop("_datajax_bodo_impl", None)
     return impl, source, namespace
 

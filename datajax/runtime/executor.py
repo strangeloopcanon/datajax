@@ -1,4 +1,3 @@
-
 """Execution backend management preferring Bodo by default."""
 
 from __future__ import annotations
@@ -31,6 +30,7 @@ class ExecutionBackend(Protocol):
 
     def compile_callable(self, fn: Callable[..., Any]) -> Callable[..., Any]:
         """Return a callable ready for execution on this backend."""
+        ...
 
 
 class PandasBackend:
@@ -151,23 +151,31 @@ def execute(plan: ExecutionPlan | DataJAXPlan, *args, **kwargs) -> Any:
     from datajax.runtime.bodo_plan import DataJAXPlan
 
     if isinstance(plan, DataJAXPlan):
-        from bodo.pandas.plan import execute_plan as execute_bodo_plan
+        try:
+            from bodo.pandas.plan import (  # pyright: ignore[reportMissingImports]
+                execute_plan as execute_bodo_plan,
+            )
+        except ImportError as exc:
+            raise RuntimeError(
+                "Bodo is not installed; install the optional dependency group "
+                "'.[bodo]' to execute DataJAXPlan objects."
+            ) from exc
 
         return execute_bodo_plan(plan)
 
-    # For now, we assume that the ExecutionPlan is a single-stage plan
-    # that contains a callable.
-    if len(plan.stages) != 1:
-        raise NotImplementedError("Multi-stage plans are not yet supported")
+    from datajax.runtime.bodo_pipeline import compile_plan_with_backend
 
-    stage = plan.stages[0]
-    if not callable(stage.steps[0]):
-        raise TypeError("Expected a callable step in the execution plan")
+    frame = kwargs.pop("frame", None)
+    if frame is None and args:
+        frame, *args = args
+    if frame is None:
+        raise TypeError("ExecutionPlan execution requires a pandas DataFrame `frame=`")
+    if args or kwargs:
+        raise TypeError("Unexpected extra arguments when executing an ExecutionPlan")
 
-    fn = stage.steps[0]
     backend = get_active_backend()
-    compiled_fn = backend.compile_callable(fn)
-    return compiled_fn(*args, **kwargs)
+    compiled = compile_plan_with_backend(plan, backend)
+    return compiled.run(frame)
 
 
 __all__ = [

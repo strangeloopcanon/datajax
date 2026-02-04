@@ -12,10 +12,11 @@ Where possible, it exposes zero-copy column views via DLPack.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import pandas as pd
+import pandas.util as pandas_util
 
 if TYPE_CHECKING:  # pragma: no cover
     from collections.abc import Iterable, Mapping
@@ -53,25 +54,28 @@ def build_prefix_cohorts(
 
     if key_col not in logs.columns:
         raise KeyError(f"Missing key column {key_col!r}")
-    hashed = pd.util.hash_pandas_object(logs[key_col], index=False).astype("uint64")
+    hash_fn = cast("Any", pandas_util.hash_pandas_object)
+    hashed = cast("pd.Series", hash_fn(logs[key_col], index=False)).astype("uint64")
     prefixes = hashed.apply(lambda x: f"{x:016x}"[: max(1, prefix_len)])
     df = pd.DataFrame({"_prefix": prefixes})
     if size_col is not None and size_col in logs.columns:
         df["_bytes"] = logs[size_col].astype("int64")
     grouped = df.groupby("_prefix")
-    counts = grouped.size().rename("count").to_frame()
+    counts = grouped.size().to_frame(name="count")
     if "_bytes" in df.columns:
         counts["bytes"] = grouped["_bytes"].sum()
     counts = counts.sort_values(["count"], ascending=False)
     if top_k is not None:
         counts = counts.head(int(top_k))
     out: list[PrefixCohort] = []
-    for _idx, row in counts.reset_index().iterrows():
+    rows = counts.reset_index()
+    has_bytes = "bytes" in rows.columns
+    for row in rows.itertuples(index=False, name=None):
         out.append(
             PrefixCohort(
-                prefix=str(row["_prefix"]),
-                count=int(row["count"]),
-                bytes=int(row["bytes"]) if "bytes" in counts.columns else None,
+                prefix=str(row[0]),
+                count=int(row[1]),
+                bytes=int(row[2]) if has_bytes else None,
             )
         )
     return out
@@ -89,7 +93,8 @@ def prefix_depth_histogram(
         return {}
     if key_col not in logs.columns:
         raise KeyError(f"Missing key column {key_col!r}")
-    hashed = pd.util.hash_pandas_object(logs[key_col], index=False).astype("uint64")
+    hash_fn = cast("Any", pandas_util.hash_pandas_object)
+    hashed = cast("pd.Series", hash_fn(logs[key_col], index=False)).astype("uint64")
     prefixes = hashed.apply(lambda x: f"{x:016x}")
     histogram: dict[str, int] = {}
     for depth in range(1, max_depth + 1):
@@ -101,19 +106,28 @@ def prefix_depth_histogram(
 def summarise_numeric_column(series: pd.Series) -> dict[str, float]:
     """Produce lightweight summary stats suited for chunk/window metadata."""
 
-    numeric = pd.to_numeric(series, errors="coerce").dropna()
+    numeric = cast("pd.Series", pd.to_numeric(series, errors="coerce")).dropna()
     if numeric.empty:
         return {}
-    percentiles = numeric.quantile([0.25, 0.5, 0.75, 0.9, 0.99])
+    quantiles = [0.25, 0.5, 0.75, 0.9, 0.99]
+    percentiles = numeric.quantile(quantiles)
     summary = {
         "count": float(len(numeric)),
-        "mean": float(numeric.mean()),
-        "std": float(numeric.std(ddof=0)),
-        "min": float(numeric.min()),
-        "max": float(numeric.max()),
+        "mean": float(cast("Any", numeric.mean())),
+        "std": float(cast("Any", numeric.std(ddof=0))),
+        "min": float(cast("Any", numeric.min())),
+        "max": float(cast("Any", numeric.max())),
     }
-    summary.update({f"p{int(p * 100)}": float(v) for p, v in percentiles.items()})
+    for q in quantiles:
+        summary[f"p{int(q * 100)}"] = float(cast("Any", percentiles.loc[q]))
     return summary
+
+
+def _series_from_frame(df: pd.DataFrame, column: str) -> pd.Series:
+    value = df[column]
+    if isinstance(value, pd.DataFrame):
+        raise TypeError(f"Expected Series column for {column!r}")
+    return value
 
 
 def coalesce_kv_extents(
@@ -141,9 +155,8 @@ def coalesce_kv_extents(
     else:
         keys = pd.Series(list(logs))
 
-    hashed = (
-        pd.util.hash_pandas_object(keys, index=False).to_numpy(dtype=np.uint64)
-    )
+    hash_fn = cast("Any", pandas_util.hash_pandas_object)
+    hashed = np.asarray(hash_fn(keys, index=False), dtype=np.uint64)
     pages = (hashed >> 0) >> max(0, int(page_bits))
     if pages.size == 0:
         return []
@@ -228,7 +241,8 @@ def export_wave_spec(
     approx_bytes = None
     if size_col and size_col in logs.columns:
         try:
-            approx_bytes = int(logs[size_col].astype("int64").sum())
+            sizes = _series_from_frame(logs, size_col).astype("int64")
+            approx_bytes = int(sizes.sum())
         except Exception:
             approx_bytes = None
     prefix_hist = prefix_depth_histogram(
@@ -238,10 +252,10 @@ def export_wave_spec(
     )
     chunk_stats = {}
     if chunk_len_col and chunk_len_col in logs.columns:
-        chunk_stats = summarise_numeric_column(logs[chunk_len_col])
+        chunk_stats = summarise_numeric_column(_series_from_frame(logs, chunk_len_col))
     window_stats = {}
     if window_col and window_col in logs.columns:
-        window_stats = summarise_numeric_column(logs[window_col])
+        window_stats = summarise_numeric_column(_series_from_frame(logs, window_col))
 
     return {
         "pack_order": pack_order,

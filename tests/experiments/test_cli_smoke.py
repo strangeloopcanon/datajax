@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+
 from datajax.frame.frame import Frame
 from datajax.ir.serialize import trace_to_list
 

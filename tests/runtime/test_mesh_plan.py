@@ -4,6 +4,8 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+import pytest
+
 from datajax.api.sharding import Resource, shard
 from datajax.runtime.mesh import compute_destinations_for_mesh, mesh_shape_from_resource
 
@@ -26,6 +28,7 @@ def test_destination_mapping_two_axes_primary_first(monkeypatch: Any) -> None:
     def fake_rebalance(df, dests=None, **kwargs):
         captured["dests"] = np.asarray(dests)
         return df
+
     monkeypatch.setattr(
         "bodo.libs.distributed_api.rebalance",
         fake_rebalance,
@@ -52,6 +55,7 @@ def test_destination_mapping_two_axes_primary_second(monkeypatch: Any) -> None:
     def fake_rebalance(df, dests=None, **kwargs):
         captured["dests"] = np.asarray(dests)
         return df
+
     monkeypatch.setattr(
         "bodo.libs.distributed_api.rebalance",
         fake_rebalance,
@@ -85,7 +89,9 @@ def _collect_lazy_nodes(plan):
 
 
 def test_join_inserts_rhs_rebalance_with_mesh(sample_frame):
+    pytest.importorskip("bodo.pandas.plan")
     import bodo
+
     from datajax.frame.frame import Frame
     from datajax.runtime.bodo_plan import DataJAXPlan
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import pandas as pd
 
@@ -36,9 +36,10 @@ class PartitionedFunction:
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         # Validate axis vs mesh early (before executing)
-        if self.out_shardings is not None and getattr(
-            self.out_shardings, "axis", None
-        ) is not None:
+        if (
+            self.out_shardings is not None
+            and getattr(self.out_shardings, "axis", None) is not None
+        ):
             axis = self.out_shardings.axis
             if self.resources is None or not getattr(self.resources, "mesh_axes", None):
                 raise ValueError(
@@ -87,9 +88,26 @@ class PartitionedFunction:
                 return base.lower(*args, **kwargs)
             finally:
                 base.resources = previous_resources
-        if hasattr(base, "lower"):
-            return base.lower(*args, **kwargs)
+        if callable(getattr(base, "lower", None)):
+            return cast("_SupportsLower", base).lower(*args, **kwargs)
         raise TypeError("Wrapped function does not expose a lowering method")
+
+    def explain(self, *args: Any, **kwargs: Any) -> str:
+        base = self.fn
+        if isinstance(base, DjitFunction):
+            previous_resources = base.resources
+            base.resources = self.resources
+            try:
+                return base.explain(*args, **kwargs)
+            finally:
+                base.resources = previous_resources
+        raise TypeError("Wrapped function does not expose an explain method")
+
+    def explain_last(self, **kwargs: Any) -> str:
+        base = self.fn
+        if isinstance(base, DjitFunction):
+            return base.explain_last(**kwargs)
+        raise TypeError("Wrapped function does not expose an explain_last method")
 
     @property
     def last_plan(self) -> ExecutionPlan | None:
@@ -134,9 +152,13 @@ class PartitionedFunction:
             plan,
             sample_df=sample,
             resources=resources,
-            shard_spec=shard_spec,
+            shard_spec=cast("ShardSpec | None", shard_spec),
             mesh_devices=mesh_devices,
         )
+
+
+class _SupportsLower(Protocol):
+    def lower(self, *args: Any, **kwargs: Any) -> Sequence[object]: ...
 
 
 def pjit(

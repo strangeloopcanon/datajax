@@ -14,7 +14,6 @@ from datajax.jax_bridge.tpu_adapter import (
 )
 
 jax = pytest.importorskip("jax")
-from jax.sharding import PartitionSpec  # noqa: E402
 
 
 @djit

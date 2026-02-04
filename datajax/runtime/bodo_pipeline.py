@@ -62,6 +62,7 @@ def compile_plan_with_backend(plan: ExecutionPlan, backend) -> CompiledPlan:
                 CompiledStage(stage=stage, fn=compiled_fn, source=source)
             )
         elif stage.kind == "repartition":
+
             def identity(frame: pd.DataFrame) -> pd.DataFrame:
                 return frame
 

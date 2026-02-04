@@ -1,4 +1,3 @@
-
 """Execution plan representations generated from traces."""
 
 from __future__ import annotations
@@ -6,24 +5,33 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from datajax.ir.graph import (
     AggregateStep,
+    BinaryExpr,
+    ColumnRef,
+    ComparisonExpr,
+    Expr,
     FilterStep,
     InputStep,
     JoinStep,
+    Literal,
+    LogicalExpr,
     MapStep,
     ProjectStep,
+    RenameExpr,
     RepartitionStep,
 )
-from datajax.planner.metrics import PlanMetrics, estimate_plan_metrics
+from datajax.planner.metrics import PlanMetrics, estimate_plan_metrics, metrics_to_dict
 from datajax.planner.optimizer import optimize_trace, validate_mesh_axes
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
     import pandas as pd
+
+    from datajax.runtime.bodo_plan import DataJAXPlan
 else:
     import types as _types
     from collections import abc as _abc
@@ -31,11 +39,14 @@ else:
     Iterable = _abc.Iterable
     Sequence = _abc.Sequence
     pd = _types.SimpleNamespace(DataFrame=object)
+    DataJAXPlan = Any
 
-try:
-    from datajax.runtime.bodo_plan import DataJAXPlan  # type: ignore
+try:  # pragma: no cover - optional dependency
+    from datajax.runtime.bodo_plan import (
+        DataJAXPlan as _RuntimeDataJAXPlan,  # type: ignore
+    )
 except Exception:  # pragma: no cover - optional dependency
-    DataJAXPlan = None  # type: ignore
+    _RuntimeDataJAXPlan = None
 
 
 @dataclass(frozen=True)
@@ -49,6 +60,15 @@ class Stage:
     def describe(self) -> str:
         names = ", ".join(type(step).__name__ for step in self.steps)
         return f"{self.kind}: {names}" if names else self.kind
+
+    def explain_lines(self) -> list[str]:
+        header = f"{self.kind}: {self.input_schema} -> {self.output_schema}"
+        if self.target_sharding is not None:
+            header += f" sharding={_format_sharding(self.target_sharding)}"
+        lines = [header]
+        for step in self.steps:
+            lines.append(f"  - {_format_step(step)}")
+        return lines
 
 
 @dataclass(frozen=True)
@@ -64,6 +84,221 @@ class ExecutionPlan:
 
     def describe(self) -> list[str]:
         return [stage.describe() for stage in self.stages]
+
+    def explain(
+        self,
+        *,
+        include_metrics: bool = True,
+        include_trace: bool = False,
+    ) -> str:
+        lines: list[str] = [
+            (
+                f"ExecutionPlan backend={self.backend} mode={self.mode} "
+                f"stages={len(self.stages)}"
+            ),
+            (
+                f"final_schema={self.final_schema} "
+                f"sharding={_format_sharding(self.final_sharding)}"
+            ),
+        ]
+
+        if self.resources is not None:
+            lines.append(f"resources={_format_resources(self.resources)}")
+
+        if include_metrics and self.metrics is not None:
+            lines.append("metrics:")
+            lines.extend(_format_metrics(self.metrics))
+
+        lines.append("stages:")
+        for idx, stage in enumerate(self.stages):
+            stage_lines = stage.explain_lines()
+            if stage_lines:
+                stage_lines[0] = f"[{idx}] {stage_lines[0]}"
+            lines.extend(stage_lines)
+
+        if include_trace:
+            lines.append("trace:")
+            for step in self.trace:
+                lines.append(f"  - {_format_step(step)}")
+
+        return "\n".join(lines)
+
+    def to_dict(self) -> dict[str, Any]:
+        from datajax.ir.serialize import step_to_dict
+
+        stages = []
+        for stage in self.stages:
+            stages.append(
+                {
+                    "kind": stage.kind,
+                    "input_schema": list(stage.input_schema),
+                    "output_schema": list(stage.output_schema),
+                    "target_sharding": _sharding_to_dict(stage.target_sharding),
+                    "steps": [step_to_dict(step) for step in stage.steps],
+                }
+            )
+        return {
+            "backend": self.backend,
+            "mode": self.mode,
+            "final_schema": list(self.final_schema),
+            "final_sharding": _sharding_to_dict(self.final_sharding),
+            "resources": _resources_to_dict(self.resources),
+            "metrics": _metrics_to_dict(self.metrics),
+            "stages": stages,
+            "trace": [step_to_dict(step) for step in self.trace],
+        }
+
+
+_BINARY_SYMBOLS = {
+    "add": "+",
+    "sub": "-",
+    "mul": "*",
+    "truediv": "/",
+}
+
+_COMPARISON_SYMBOLS = {
+    "eq": "==",
+    "ne": "!=",
+    "lt": "<",
+    "le": "<=",
+    "gt": ">",
+    "ge": ">=",
+}
+
+_LOGICAL_SYMBOLS = {
+    "and": "and",
+    "or": "or",
+}
+
+
+def _format_expr(expr: Expr) -> str:
+    if isinstance(expr, ColumnRef):
+        return expr.name
+    if isinstance(expr, Literal):
+        return repr(expr.value)
+    if isinstance(expr, RenameExpr):
+        return f"{_format_expr(expr.expr)} as {expr.alias}"
+    if isinstance(expr, BinaryExpr):
+        op = _BINARY_SYMBOLS.get(expr.op, expr.op)
+        return f"({_format_expr(expr.left)} {op} {_format_expr(expr.right)})"
+    if isinstance(expr, ComparisonExpr):
+        op = _COMPARISON_SYMBOLS.get(expr.op, expr.op)
+        return f"({_format_expr(expr.left)} {op} {_format_expr(expr.right)})"
+    if isinstance(expr, LogicalExpr):
+        op = _LOGICAL_SYMBOLS.get(expr.op, expr.op)
+        return f"({_format_expr(expr.left)} {op} {_format_expr(expr.right)})"
+    return type(expr).__name__
+
+
+def _sharding_to_dict(spec: object | None) -> dict[str, Any] | None:
+    if spec is None:
+        return None
+    if isinstance(spec, dict):
+        return {str(k): v for k, v in spec.items()}
+    kind = getattr(spec, "kind", None)
+    if kind is not None:
+        out: dict[str, Any] = {"kind": str(kind)}
+        key = getattr(spec, "key", None)
+        if key is not None:
+            out["key"] = key
+        axis = getattr(spec, "axis", None)
+        if axis is not None:
+            out["axis"] = axis
+        return out
+    return {"repr": repr(spec)}
+
+
+def _format_sharding(spec: object | None) -> str:
+    data = _sharding_to_dict(spec)
+    if data is None:
+        return "-"
+    if "repr" in data and len(data) == 1:
+        return str(data["repr"])
+    return ", ".join(f"{k}={v!r}" for k, v in data.items())
+
+
+def _resources_to_dict(resources: object | None) -> dict[str, Any] | None:
+    if resources is None:
+        return None
+    if isinstance(resources, dict):
+        return {str(k): v for k, v in resources.items()}
+    out: dict[str, Any] = {"type": type(resources).__name__}
+    mesh_axes = getattr(resources, "mesh_axes", None)
+    if mesh_axes is not None:
+        out["mesh_axes"] = list(mesh_axes)
+    world_size = getattr(resources, "world_size", None)
+    if world_size is not None:
+        out["world_size"] = world_size
+    return out
+
+
+def _format_resources(resources: object) -> str:
+    data = _resources_to_dict(resources)
+    if data is None:
+        return "-"
+    if data.get("type") == "dict":
+        return repr(data)
+    parts = []
+    for key in ("mesh_axes", "world_size"):
+        if key in data:
+            parts.append(f"{key}={data[key]!r}")
+    rendered = ", ".join(parts) if parts else repr(resources)
+    return f"{data.get('type', type(resources).__name__)}({rendered})"
+
+
+def _format_step(step: object) -> str:
+    if isinstance(step, InputStep):
+        return f"InputStep schema={tuple(step.schema)!r}"
+    if isinstance(step, MapStep):
+        return f"MapStep output={step.output!r} expr={_format_expr(step.expr)}"
+    if isinstance(step, FilterStep):
+        return f"FilterStep predicate={_format_expr(step.predicate)}"
+    if isinstance(step, ProjectStep):
+        return f"ProjectStep columns={tuple(step.columns)!r}"
+    if isinstance(step, AggregateStep):
+        return (
+            f"AggregateStep agg={step.agg!r} "
+            f"key={_format_expr(step.key)} value={_format_expr(step.value)} "
+            f"-> ({step.key_alias!r}, {step.value_alias!r})"
+        )
+    if isinstance(step, JoinStep):
+        return (
+            f"JoinStep how={step.how!r} on=({step.left_on!r}={step.right_on!r}) "
+            f"rhs_cols={len(step.right_columns)}"
+        )
+    if isinstance(step, RepartitionStep):
+        return f"RepartitionStep spec={_format_sharding(step.spec)}"
+    return type(step).__name__
+
+
+def _format_metrics(metrics: PlanMetrics) -> list[str]:
+    lines = [
+        "  "
+        f"steps_total={metrics.steps_total} transform={metrics.transform_steps} "
+        f"join={metrics.join_steps} aggregate={metrics.aggregate_steps} "
+        f"repartition={metrics.repartition_steps}"
+    ]
+    if metrics.estimated_input_rows is not None:
+        lines.append(f"  estimated_input_rows={metrics.estimated_input_rows}")
+    if metrics.estimated_input_bytes is not None:
+        lines.append(f"  estimated_input_bytes={metrics.estimated_input_bytes}")
+    if metrics.estimated_shuffle_bytes is not None:
+        lines.append(f"  estimated_shuffle_bytes={metrics.estimated_shuffle_bytes}")
+    if metrics.runtime_input_bytes is not None:
+        lines.append(f"  runtime_input_bytes={metrics.runtime_input_bytes}")
+    if metrics.runtime_shuffle_bytes is not None:
+        lines.append(f"  runtime_shuffle_bytes={metrics.runtime_shuffle_bytes}")
+    if metrics.pack_order_hint:
+        lines.append(f"  pack_order_hint={metrics.pack_order_hint}")
+    if metrics.notes:
+        lines.append(f"  notes={metrics.notes}")
+    if metrics.runtime_notes:
+        lines.append(f"  runtime_notes={metrics.runtime_notes}")
+    return lines
+
+
+def _metrics_to_dict(metrics: PlanMetrics | None) -> dict[str, Any] | None:
+    return metrics_to_dict(metrics)
 
 
 _STEP_KINDS = {
@@ -188,13 +423,13 @@ def build_plan(
 
     native_flag = os.environ.get("DATAJAX_NATIVE_BODO", "0") == "1"
     if backend == "bodo" and native_flag:
-        if DataJAXPlan is None:
+        if _RuntimeDataJAXPlan is None:
             raise RuntimeError(
                 "DATAJAX_NATIVE_BODO=1 requested but native plan support is unavailable"
             )
         if input_df is None:
             raise ValueError("input_df is required for native Bodo lowering")
-        return DataJAXPlan(optimized_trace, input_df, resources=resources)
+        return _RuntimeDataJAXPlan(optimized_trace, input_df, resources=resources)
 
     # Pre-compute optional metrics using a lightweight plan-like object
     try:

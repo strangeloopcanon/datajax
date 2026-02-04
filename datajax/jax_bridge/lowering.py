@@ -9,7 +9,9 @@ composed with TPU runtimes such as tpu-inference. Unsupported steps raise
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Iterable, Mapping, MutableMapping
+from functools import lru_cache
+from importlib import import_module
+from typing import TYPE_CHECKING, Any, TypeAlias
 
 import numpy as np
 
@@ -32,27 +34,49 @@ from datajax.ir.graph import (
 from datajax.runtime.mesh import mesh_shape_from_resource
 
 if TYPE_CHECKING:  # pragma: no cover
-    from collections.abc import Sequence
+    from collections.abc import Mapping, MutableMapping, Sequence
 
     import pandas as pd
 
     from datajax.api.sharding import Resource, ShardSpec
     from datajax.planner.plan import ExecutionPlan
 else:
-    Sequence = Any
+    Mapping = MutableMapping = Sequence = Any
     Resource = ShardSpec = ExecutionPlan = Any
     pd = Any
 
-try:  # pragma: no cover - optional dependency
-    import jax
-    import jax.numpy as jnp
-    from jax import ops
-    from jax.sharding import Mesh, NamedSharding, PartitionSpec
-except ImportError:  # pragma: no cover - surfaced at runtime
-    jax = None
-    jnp = None
-    ops = None
-    Mesh = NamedSharding = PartitionSpec = None  # type: ignore[assignment]
+JaxArray: TypeAlias = Any
+JaxMesh: TypeAlias = Any
+JaxPartitionSpec: TypeAlias = Any
+
+
+@lru_cache(maxsize=1)
+def _require_jax() -> tuple[Any, Any, Any, Any, Any]:
+    """Import JAX modules at runtime or raise a helpful error."""
+
+    try:
+        jax = import_module("jax")
+        jnp = import_module("jax.numpy")
+    except Exception as exc:  # pragma: no cover - dependent on env
+        raise RuntimeError(
+            "JAX is required for TPU lowering. Install the optional extras "
+            "(e.g. `pip install .[tpu]`) or add JAX to your environment."
+        ) from exc
+
+    jax_ops = getattr(jax, "ops", None)
+    if jax_ops is None:  # pragma: no cover - version dependent
+        raise RuntimeError("jax.ops is unavailable; install a compatible JAX version")
+
+    sharding = import_module("jax.sharding")
+    Mesh = getattr(sharding, "Mesh", None)
+    PartitionSpec = getattr(sharding, "PartitionSpec", None)
+    if Mesh is None or PartitionSpec is None:  # pragma: no cover - version dependent
+        raise RuntimeError(
+            "jax.sharding Mesh/PartitionSpec are unavailable; install a compatible "
+            "JAX version"
+        )
+
+    return jax, jnp, jax_ops, Mesh, PartitionSpec
 
 
 @dataclass(frozen=True)
@@ -60,9 +84,9 @@ class LoweredPlan:
     """Result of translating a DataJAX ExecutionPlan to JAX."""
 
     plan: ExecutionPlan
-    mesh: Mesh | None
-    in_spec: PartitionSpec | None
-    out_spec: PartitionSpec | None
+    mesh: JaxMesh | None
+    in_spec: JaxPartitionSpec | None
+    out_spec: JaxPartitionSpec | None
     columns: tuple[str, ...]
 
     # The callable is stored eagerly to let consumers compose with jit/pjit.
@@ -70,39 +94,34 @@ class LoweredPlan:
 
     def jit(self, **kwargs: Any) -> Any:
         """Return a `jax.jit`-compiled callable for the lowered plan."""
-
-        if jax is None:
-            raise RuntimeError("JAX is not installed; cannot jit compile the plan")
+        jax, _, _, _, _ = _require_jax()
         return jax.jit(self.callable, **kwargs)
 
 
-def _require_jax() -> None:
-    if jax is None or jnp is None:  # pragma: no cover - dependent on env
-        raise RuntimeError(
-            "JAX is required for TPU lowering. Install the optional "
-            "extras (e.g. `pip install .[tpu]`) or add JAX to your environment."
-        )
-
-
-def _broadcast_literal(value: Any, reference: Mapping[str, "jnp.ndarray"]) -> "jnp.ndarray":
+def _broadcast_literal(
+    value: Any,
+    reference: Mapping[str, JaxArray],
+    *,
+    jnp: Any,
+) -> JaxArray:
     if not reference:
         return jnp.asarray(value)
     first = next(iter(reference.values()))
     return jnp.broadcast_to(jnp.asarray(value), first.shape)
 
 
-def _eval_expr(expr: Expr, columns: Mapping[str, "jnp.ndarray"]) -> "jnp.ndarray":
+def _eval_expr(expr: Expr, columns: Mapping[str, JaxArray], *, jnp: Any) -> JaxArray:
     if isinstance(expr, ColumnRef):
         if expr.name not in columns:
             raise KeyError(f"Column {expr.name!r} not found in lowering context")
         return columns[expr.name]
     if isinstance(expr, Literal):
-        return _broadcast_literal(expr.value, columns)
+        return _broadcast_literal(expr.value, columns, jnp=jnp)
     if isinstance(expr, RenameExpr):
-        return _eval_expr(expr.expr, columns)
+        return _eval_expr(expr.expr, columns, jnp=jnp)
     if isinstance(expr, BinaryExpr):
-        left = _eval_expr(expr.left, columns)
-        right = _eval_expr(expr.right, columns)
+        left = _eval_expr(expr.left, columns, jnp=jnp)
+        right = _eval_expr(expr.right, columns, jnp=jnp)
         if expr.op == "add":
             return left + right
         if expr.op == "sub":
@@ -111,11 +130,13 @@ def _eval_expr(expr: Expr, columns: Mapping[str, "jnp.ndarray"]) -> "jnp.ndarray
             return left * right
         if expr.op == "truediv":
             return left / right
-        raise NotImplementedError(f"Binary op {expr.op!r} is not supported in JAX lowering")
+        raise NotImplementedError(
+            f"Binary op {expr.op!r} is not supported in JAX lowering"
+        )
     if isinstance(expr, ComparisonExpr):
-        left = _eval_expr(expr.left, columns)
-        right = _eval_expr(expr.right, columns)
-        ops = {
+        left = _eval_expr(expr.left, columns, jnp=jnp)
+        right = _eval_expr(expr.right, columns, jnp=jnp)
+        cmp_ops = {
             "eq": jnp.equal,
             "ne": jnp.not_equal,
             "lt": jnp.less,
@@ -123,13 +144,13 @@ def _eval_expr(expr: Expr, columns: Mapping[str, "jnp.ndarray"]) -> "jnp.ndarray
             "gt": jnp.greater,
             "ge": jnp.greater_equal,
         }
-        fn = ops.get(expr.op)
+        fn = cmp_ops.get(expr.op)
         if fn is None:
             raise NotImplementedError(f"Comparison op {expr.op!r} not supported")
         return fn(left, right)
     if isinstance(expr, LogicalExpr):
-        left = _eval_expr(expr.left, columns)
-        right = _eval_expr(expr.right, columns)
+        left = _eval_expr(expr.left, columns, jnp=jnp)
+        right = _eval_expr(expr.right, columns, jnp=jnp)
         if expr.op == "and":
             return jnp.logical_and(left, right)
         if expr.op == "or":
@@ -138,8 +159,13 @@ def _eval_expr(expr: Expr, columns: Mapping[str, "jnp.ndarray"]) -> "jnp.ndarray
     raise NotImplementedError(f"Expression type {type(expr)!r} not implemented")
 
 
-def _rows_mask(predicate: Expr, columns: Mapping[str, "jnp.ndarray"]) -> "jnp.ndarray":
-    mask = _eval_expr(predicate, columns)
+def _rows_mask(
+    predicate: Expr,
+    columns: Mapping[str, JaxArray],
+    *,
+    jnp: Any,
+) -> JaxArray:
+    mask = _eval_expr(predicate, columns, jnp=jnp)
     if mask.dtype != jnp.bool_:
         raise TypeError("Filter predicates must evaluate to boolean arrays")
     return mask
@@ -147,20 +173,24 @@ def _rows_mask(predicate: Expr, columns: Mapping[str, "jnp.ndarray"]) -> "jnp.nd
 
 def _apply_steps(
     plan: ExecutionPlan,
-    columns: MutableMapping[str, "jnp.ndarray"],
-) -> tuple[MutableMapping[str, "jnp.ndarray"], tuple[str, ...], Any]:
+    columns: MutableMapping[str, JaxArray],
+    *,
+    jax: Any,
+    jnp: Any,
+    jax_ops: Any,
+) -> tuple[MutableMapping[str, JaxArray], tuple[str, ...], Any]:
     target_sharding = None
     for stage in plan.stages:
         for step in stage.steps:
             if isinstance(step, MapStep):
-                columns[step.output] = _eval_expr(step.expr, columns)
+                columns[step.output] = _eval_expr(step.expr, columns, jnp=jnp)
             elif isinstance(step, ProjectStep):
                 columns_keys = {k for k in columns.keys()}
                 for name in columns_keys:
                     if name not in step.columns:
                         columns.pop(name)
             elif isinstance(step, FilterStep):
-                mask = _rows_mask(step.predicate, columns)
+                mask = _rows_mask(step.predicate, columns, jnp=jnp)
                 for key in list(columns.keys()):
                     columns[key] = columns[key][mask]
             elif isinstance(step, RepartitionStep):
@@ -168,44 +198,49 @@ def _apply_steps(
                 target_sharding = step.spec
             elif isinstance(step, AggregateStep):
                 source_columns = dict(columns)
-                key_arr = _eval_expr(step.key, source_columns)
-                value_arr = _eval_expr(step.value, source_columns)
+                key_arr = _eval_expr(step.key, source_columns, jnp=jnp)
+                value_arr = _eval_expr(step.value, source_columns, jnp=jnp)
                 if key_arr.ndim != 1 or value_arr.ndim != 1:
-                    raise ValueError("Aggregate lowering expects 1D key and value arrays")
-                if ops is None:
-                    raise RuntimeError("JAX is required to lower aggregate steps")
+                    raise ValueError(
+                        "Aggregate lowering expects 1D key and value arrays"
+                    )
                 unique_keys, inverse, counts = jnp.unique(
                     key_arr, size=None, return_inverse=True, return_counts=True
                 )
                 num_segments = unique_keys.shape[0]
                 if step.agg == "sum":
-                    reduced = ops.segment_sum(value_arr, inverse, num_segments)
+                    reduced = jax_ops.segment_sum(value_arr, inverse, num_segments)
                 elif step.agg == "count":
                     ones = jnp.ones_like(value_arr, dtype=jnp.int32)
-                    reduced = ops.segment_sum(ones, inverse, num_segments).astype(jnp.int64)
+                    reduced = jax_ops.segment_sum(ones, inverse, num_segments).astype(
+                        jnp.int64
+                    )
                 elif step.agg == "mean":
                     if np.issubdtype(value_arr.dtype, np.floating):
-                        sums = ops.segment_sum(value_arr, inverse, num_segments)
-                        denom = jnp.maximum(counts.astype(value_arr.dtype), value_arr.dtype.type(1))
+                        sums = jax_ops.segment_sum(value_arr, inverse, num_segments)
+                        denom = jnp.maximum(
+                            counts.astype(value_arr.dtype),
+                            value_arr.dtype.type(1),
+                        )
                         reduced = sums / denom
                     else:
-                        sums = ops.segment_sum(
+                        sums = jax_ops.segment_sum(
                             value_arr.astype(jnp.float32), inverse, num_segments
                         )
                         denom = jnp.maximum(counts.astype(jnp.float32), jnp.float32(1))
                         reduced = sums / denom
                 elif step.agg == "min":
-                    reduced = ops.segment_min(value_arr, inverse, num_segments)
+                    reduced = jax_ops.segment_min(value_arr, inverse, num_segments)
                 elif step.agg == "max":
-                    reduced = ops.segment_max(value_arr, inverse, num_segments)
+                    reduced = jax_ops.segment_max(value_arr, inverse, num_segments)
                 else:
-                    raise NotImplementedError(f"Aggregate op {step.agg!r} is not supported")
+                    raise NotImplementedError(
+                        f"Aggregate op {step.agg!r} is not supported"
+                    )
                 columns.clear()
                 columns[step.key_alias] = unique_keys
                 columns[step.value_alias] = reduced
             elif isinstance(step, JoinStep):
-                if jax is None or jnp is None:
-                    raise RuntimeError("JAX is required to lower join steps")
                 if step.how != "inner":
                     raise NotImplementedError(f"Join how={step.how!r} is not supported")
                 if step.left_on not in columns:
@@ -214,14 +249,25 @@ def _apply_steps(
                 right_df = step.right_data
                 right_key = jnp.asarray(right_df[step.right_on].to_numpy())
                 right_arrays = {
-                    col: jnp.asarray(right_df[col].to_numpy()) for col in step.right_columns
+                    col: jnp.asarray(right_df[col].to_numpy())
+                    for col in step.right_columns
                 }
                 order = jnp.argsort(right_key)
                 sorted_keys = right_key[order]
 
-                def _lookup(value: jnp.ndarray) -> jnp.ndarray:
+                sorted_keys_local = sorted_keys
+                order_local = order
+
+                def _lookup(
+                    value: JaxArray,
+                    *,
+                    sorted_keys: JaxArray = sorted_keys_local,
+                    order: JaxArray = order_local,
+                ) -> JaxArray:
                     pos = jnp.searchsorted(sorted_keys, value, side="left")
-                    in_bounds = (pos < sorted_keys.shape[0]) & (sorted_keys[pos] == value)
+                    in_bounds = (pos < sorted_keys.shape[0]) & (
+                        sorted_keys[pos] == value
+                    )
                     return jnp.where(in_bounds, order[pos], -1)
 
                 lookup_fn = jax.vmap(_lookup)
@@ -254,15 +300,16 @@ def _apply_steps(
 def _materialize_mesh(
     resources: Resource | None,
     mesh_devices: Sequence[Any] | None = None,
-) -> Mesh | None:
+) -> JaxMesh | None:
     if resources is None:
         return None
-    _require_jax()
+    jax, _, _, Mesh, _ = _require_jax()
     devices = mesh_devices or jax.devices()
     world_size = int(getattr(resources, "world_size", 0) or len(devices))
     if world_size > len(devices):
         raise ValueError(
-            f"Resource world_size={world_size} exceeds available devices ({len(devices)})"
+            f"Resource world_size={world_size} exceeds available devices "
+            f"({len(devices)})"
         )
     mesh_axes = tuple(getattr(resources, "mesh_axes", ()) or ())
     shape = mesh_shape_from_resource(resources, world_size)
@@ -279,10 +326,11 @@ def _materialize_mesh(
 
 def _partition_from_shard(
     shard_spec: ShardSpec | None,
-    mesh: Mesh | None,
-) -> PartitionSpec | None:
+    mesh: JaxMesh | None,
+) -> JaxPartitionSpec | None:
     if shard_spec is None or mesh is None:
         return None
+    _, _, _, _, PartitionSpec = _require_jax()
     axis = getattr(shard_spec, "axis", None)
     if shard_spec.kind == "replicated":
         return PartitionSpec()
@@ -299,11 +347,11 @@ def _partition_from_shard(
     return None
 
 
-def dataframe_to_device_arrays(df: "pd.DataFrame") -> dict[str, "jnp.ndarray"]:
+def dataframe_to_device_arrays(df: pd.DataFrame) -> dict[str, JaxArray]:
     """Convert a pandas DataFrame into column-major JAX arrays."""
 
-    _require_jax()
-    arrays: dict[str, jnp.ndarray] = {}
+    _, jnp, _, _, _ = _require_jax()
+    arrays: dict[str, JaxArray] = {}
     for column in df.columns:
         values = df[column].to_numpy()
         arrays[column] = jnp.asarray(values)
@@ -313,14 +361,14 @@ def dataframe_to_device_arrays(df: "pd.DataFrame") -> dict[str, "jnp.ndarray"]:
 def lower_plan_to_jax(
     plan: ExecutionPlan,
     *,
-    sample_df: "pd.DataFrame | None" = None,
+    sample_df: pd.DataFrame | None = None,
     resources: Resource | None = None,
     shard_spec: ShardSpec | None = None,
     mesh_devices: Sequence[Any] | None = None,
 ) -> LoweredPlan:
     """Translate an ExecutionPlan into a JAX callable and mesh metadata."""
 
-    _require_jax()
+    jax, jnp, jax_ops, _, _ = _require_jax()
     if sample_df is None:
         raise ValueError("sample_df is required to infer shapes for JAX lowering")
 
@@ -329,10 +377,12 @@ def lower_plan_to_jax(
     def _plan_callable(payload: Mapping[str, Any]) -> dict[str, Any]:
         # Convert payload to mutable columns to allow updates.
         materialized = {name: jnp.asarray(array) for name, array in payload.items()}
-        _, keys, _ = _apply_steps(plan, materialized)
+        _, keys, _ = _apply_steps(plan, materialized, jax=jax, jnp=jnp, jax_ops=jax_ops)
         return {key: materialized[key] for key in keys}
 
-    result_columns, column_order, sharding_spec = _apply_steps(plan, dict(input_arrays))
+    _, column_order, sharding_spec = _apply_steps(
+        plan, dict(input_arrays), jax=jax, jnp=jnp, jax_ops=jax_ops
+    )
 
     mesh = _materialize_mesh(resources, mesh_devices)
     out_spec = _partition_from_shard(shard_spec or sharding_spec, mesh)

@@ -2,19 +2,22 @@
 
 from __future__ import annotations
 
+import importlib
 from dataclasses import dataclass, replace
-from typing import Any, Callable, Mapping, MutableMapping, Sequence
+from typing import TYPE_CHECKING, Any
 
-import numpy as np
-
-from datajax.jax_bridge.lowering import LoweredPlan
 from datajax.runtime.mesh import mesh_shape_from_resource
 
+if TYPE_CHECKING:  # pragma: no cover
+    from collections.abc import Callable, Mapping, MutableMapping, Sequence
+
+    from datajax.jax_bridge.lowering import LoweredPlan
+else:  # pragma: no cover
+    Callable = Mapping = MutableMapping = Sequence = LoweredPlan = Any
+
 try:  # pragma: no cover - optional dependency
-    import jax.numpy as jnp
-    from jax.sharding import PartitionSpec
+    import jax.numpy as jnp  # pyright: ignore[reportMissingImports]
 except ImportError:  # pragma: no cover - surfaced at runtime
-    PartitionSpec = Any  # type: ignore[assignment]
     jnp = None  # type: ignore[assignment]
 
 
@@ -34,13 +37,13 @@ class DataJAXModelDefinition:
     out_partition: tuple[str | None, ...] | None
     metadata: Mapping[str, Any]
 
-    def with_metadata(self, **extra: Any) -> "DataJAXModelDefinition":
+    def with_metadata(self, **extra: Any) -> DataJAXModelDefinition:
         merged = dict(self.metadata)
         merged.update(extra)
         return replace(self, metadata=merged)
 
 
-def _partition_to_tuple(spec: PartitionSpec | None) -> tuple[str | None, ...] | None:
+def _partition_to_tuple(spec: Any | None) -> tuple[str | None, ...] | None:
     if spec is None:
         return None
     axes: Sequence[Any] = getattr(spec, "partition_spec", spec)  # type: ignore[attr-defined]
@@ -102,7 +105,9 @@ def register_with_tpu_inference(
 
     if register_fn is None:
         try:
-            from tpu_inference.models.common import model_loader
+            model_loader = importlib.import_module(
+                "tpu_inference.models.common.model_loader"
+            )
         except ImportError as exc:  # pragma: no cover - optional dependency
             raise TPUIntegrationError(
                 "tpu-inference is not installed; install the optional "
@@ -112,10 +117,16 @@ def register_with_tpu_inference(
         register_fn = getattr(model_loader, "register_model", None)
         if register_fn is None:
             raise TPUIntegrationError(
-                "tpu_inference.models.common.model_loader.register_model is unavailable."
+                "tpu_inference.models.common.model_loader.register_model is "
+                "unavailable."
             )
 
     return register_fn(definition.model_id, definition)
 
 
-__all__ = ["DataJAXModelDefinition", "TPUIntegrationError", "build_tpu_model_definition", "register_with_tpu_inference"]
+__all__ = [
+    "DataJAXModelDefinition",
+    "TPUIntegrationError",
+    "build_tpu_model_definition",
+    "register_with_tpu_inference",
+]

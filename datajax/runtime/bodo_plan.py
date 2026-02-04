@@ -1,30 +1,9 @@
 from __future__ import annotations
 
 import operator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
-import bodo
 import pandas as pd
-from bodo.ext import plan_optimizer
-from bodo.pandas.plan import (
-    AggregateExpression,
-    ArithOpExpression,
-    ColRefExpression,
-    ComparisonOpExpression,
-    ConjunctionOpExpression,
-    ConstantExpression,
-    LazyPlan,
-    LazyPlanDistributedArg,
-    LogicalAggregate,
-    LogicalComparisonJoin,
-    LogicalFilter,
-    LogicalGetPandasReadParallel,
-    LogicalGetPandasReadSeq,
-    LogicalProjection,
-    _get_df_python_func_plan,
-    make_col_ref_exprs,
-)
-from bodo.pandas.utils import get_n_index_arrays
 
 from datajax.ir.graph import (
     AggregateStep,
@@ -48,6 +27,62 @@ from datajax.runtime.mesh import (
 )
 from datajax.runtime.plan_diagnostics import PlanDiagnostics
 
+_BODO_IMPORT_ERROR: Exception | None
+
+LazyPlanLike: TypeAlias = Any
+
+try:  # pragma: no cover - optional dependency
+    import bodo  # type: ignore[import-not-found]
+    from bodo.ext import plan_optimizer  # type: ignore[import-not-found]
+    from bodo.pandas.plan import (  # type: ignore[import-not-found]
+        AggregateExpression,
+        ArithOpExpression,
+        ColRefExpression,
+        ComparisonOpExpression,
+        ConjunctionOpExpression,
+        ConstantExpression,
+        LazyPlan,
+        LazyPlanDistributedArg,
+        LogicalAggregate,
+        LogicalComparisonJoin,
+        LogicalFilter,
+        LogicalGetPandasReadParallel,
+        LogicalGetPandasReadSeq,
+        LogicalProjection,
+        _get_df_python_func_plan,
+        make_col_ref_exprs,
+    )
+    from bodo.pandas.utils import get_n_index_arrays  # type: ignore[import-not-found]
+except Exception as exc:  # pragma: no cover - optional dependency
+    bodo = None  # type: ignore[assignment]
+    plan_optimizer = None  # type: ignore[assignment]
+
+    class LazyPlan:  # pragma: no cover
+        pass
+
+    _BODO_STUB = cast("Any", object)
+    (
+        AggregateExpression,
+        ArithOpExpression,
+        ColRefExpression,
+        ComparisonOpExpression,
+        ConjunctionOpExpression,
+        ConstantExpression,
+        LazyPlanDistributedArg,
+        LogicalAggregate,
+        LogicalComparisonJoin,
+        LogicalFilter,
+        LogicalGetPandasReadParallel,
+        LogicalGetPandasReadSeq,
+        LogicalProjection,
+        _get_df_python_func_plan,
+        make_col_ref_exprs,
+        get_n_index_arrays,
+    ) = (_BODO_STUB,) * 16
+    _BODO_IMPORT_ERROR = exc
+else:
+    _BODO_IMPORT_ERROR = None
+
 if TYPE_CHECKING:
     from collections.abc import Sequence
 else:
@@ -56,7 +91,7 @@ else:
     Sequence = _abc.Sequence
 
 
-class DataJAXPlan(LazyPlan):
+class DataJAXPlan(cast("type[Any]", LazyPlan)):
     """Translate DataJAX IR steps into Bodo LazyPlan nodes."""
 
     _ARITH_OPS = {
@@ -85,13 +120,6 @@ class DataJAXPlan(LazyPlan):
         "mean": pd.Series([], dtype="float64").dtype,
     }
 
-    _JOIN_TYPES = {
-        "inner": plan_optimizer.CJoinType.INNER,
-        "left": plan_optimizer.CJoinType.LEFT,
-        "right": plan_optimizer.CJoinType.RIGHT,
-        "outer": plan_optimizer.CJoinType.OUTER,
-    }
-
     def __init__(
         self,
         trace: Sequence[object],
@@ -99,6 +127,12 @@ class DataJAXPlan(LazyPlan):
         *,
         resources: object | None = None,
     ) -> None:
+        if bodo is None or plan_optimizer is None:
+            raise RuntimeError(
+                "Native Bodo lowering requires a real Bodo installation. "
+                "Install the optional dependency group `datajax[bodo]`."
+            ) from _BODO_IMPORT_ERROR
+
         self.trace = trace
         self._input_df = input_df
         self.resources = resources
@@ -141,8 +175,9 @@ class DataJAXPlan(LazyPlan):
     def _empty_series(self, dtype, name: str | None = None) -> pd.Series:
         return pd.Series([], dtype=dtype, name=name)
 
-    def _plan_from_pandas(self, df: pd.DataFrame) -> LazyPlan:
+    def _plan_from_pandas(self, df: pd.DataFrame) -> LazyPlanLike:
         empty = df.head(0)
+        assert bodo is not None
         if bodo.dataframe_library_run_parallel:
             return LogicalGetPandasReadParallel(
                 empty,
@@ -151,7 +186,19 @@ class DataJAXPlan(LazyPlan):
             )
         return LogicalGetPandasReadSeq(empty, df)
 
-    def _translate_expr(self, expr, source_plan: LazyPlan, name: str | None = None):
+    def _resolve_join_type(self, how: str):
+        assert plan_optimizer is not None
+        join_type = {
+            "inner": plan_optimizer.CJoinType.INNER,
+            "left": plan_optimizer.CJoinType.LEFT,
+            "right": plan_optimizer.CJoinType.RIGHT,
+            "outer": plan_optimizer.CJoinType.OUTER,
+        }.get(how)
+        if join_type is None:
+            raise NotImplementedError(f"Unsupported join type: {how}")
+        return join_type
+
+    def _translate_expr(self, expr, source_plan: LazyPlanLike, name: str | None = None):
         if isinstance(expr, ColumnRef):
             return ColRefExpression(
                 source_plan.empty_data[[expr.name]],
@@ -207,12 +254,17 @@ class DataJAXPlan(LazyPlan):
 
     def _translate_trace(
         self, trace: Sequence[object], empty_data: pd.DataFrame
-    ) -> LazyPlan:
-        plan: LazyPlan | None = None
+    ) -> LazyPlanLike:
+        plan: LazyPlanLike | None = None
         for step in trace:
             if isinstance(step, InputStep):
                 plan = self._translate_input_step(step, empty_data)
-            elif isinstance(step, ProjectStep):
+                continue
+
+            if plan is None:
+                raise ValueError("Trace must start with an InputStep")
+
+            if isinstance(step, ProjectStep):
                 plan = self._translate_project_step(step, plan)
             elif isinstance(step, FilterStep):
                 plan = self._translate_filter_step(step, plan)
@@ -231,7 +283,8 @@ class DataJAXPlan(LazyPlan):
 
     def _translate_input_step(
         self, step: InputStep, empty_data: pd.DataFrame
-    ) -> LazyPlan:
+    ) -> LazyPlanLike:
+        assert bodo is not None
         if bodo.dataframe_library_run_parallel:
             return LogicalGetPandasReadParallel(
                 empty_data,
@@ -241,8 +294,8 @@ class DataJAXPlan(LazyPlan):
         return LogicalGetPandasReadSeq(empty_data, self._input_df)
 
     def _translate_project_step(
-        self, step: ProjectStep, source_plan: LazyPlan
-    ) -> LazyPlan:
+        self, step: ProjectStep, source_plan: LazyPlanLike
+    ) -> LazyPlanLike:
         empty_data = source_plan.empty_data[list(step.columns)]
         exprs = [
             ColRefExpression(
@@ -255,12 +308,14 @@ class DataJAXPlan(LazyPlan):
         return LogicalProjection(empty_data, source_plan, exprs)
 
     def _translate_filter_step(
-        self, step: FilterStep, source_plan: LazyPlan
-    ) -> LazyPlan:
+        self, step: FilterStep, source_plan: LazyPlanLike
+    ) -> LazyPlanLike:
         predicate = self._translate_expr(step.predicate, source_plan)
         return LogicalFilter(source_plan.empty_data, source_plan, predicate)
 
-    def _translate_map_step(self, step: MapStep, source_plan: LazyPlan) -> LazyPlan:
+    def _translate_map_step(
+        self, step: MapStep, source_plan: LazyPlanLike
+    ) -> LazyPlanLike:
         empty_data = source_plan.empty_data.copy()
         existing_cols = list(empty_data.columns)
         exprs = []
@@ -294,8 +349,8 @@ class DataJAXPlan(LazyPlan):
         return LogicalProjection(empty_data[new_cols], source_plan, exprs)
 
     def _translate_aggregate_step(
-        self, step: AggregateStep, source_plan: LazyPlan
-    ) -> LazyPlan:
+        self, step: AggregateStep, source_plan: LazyPlanLike
+    ) -> LazyPlanLike:
         key_dtype = source_plan.empty_data[step.key_alias].dtype
         value_dtype = source_plan.empty_data[step.value_alias].dtype
         result_dtype = self._AGG_RESULT_DTYPES.get(step.agg, value_dtype)
@@ -318,13 +373,11 @@ class DataJAXPlan(LazyPlan):
         return LogicalAggregate(empty_data, source_plan, [key_idx], [agg_expr])
 
     def _translate_join_step(
-        self, step: JoinStep, source_plan: LazyPlan
-    ) -> LazyPlan:
-        join_type = self._JOIN_TYPES.get(step.how)
-        if join_type is None:
-            raise NotImplementedError(f"Unsupported join type: {step.how}")
+        self, step: JoinStep, source_plan: LazyPlanLike
+    ) -> LazyPlanLike:
+        join_type = self._resolve_join_type(step.how)
 
-        right_df = step.right_data
+        right_df = cast("pd.DataFrame", step.right_data)
         right_plan = self._plan_from_pandas(right_df)
 
         # Only attempt to rebalance RHS when running the dataframe library in parallel.
@@ -332,17 +385,26 @@ class DataJAXPlan(LazyPlan):
         # _get_df_python_func_plan triggers a scalar-UDF pathway inside Bodo
         # that expects a Series-like output (leading to dtype errors).
         if self.resources is not None:
+            bodo_module: Any | None = None
             try:
-                import bodo  # local import to avoid sandbox import errors
-                run_parallel = getattr(bodo, "dataframe_library_run_parallel", False)
+                import bodo as bodo_module  # type: ignore[import-not-found]
+
+                run_parallel = bool(
+                    getattr(bodo_module, "dataframe_library_run_parallel", False)
+                )
             except Exception:
                 run_parallel = False
             import os
+
             if os.environ.get("DATAJAX_DISABLE_NATIVE_REBALANCE", "0") == "1":
                 run_parallel = False
 
             if run_parallel:
-                mesh_shape = mesh_shape_from_resource(self.resources, bodo.get_size())
+                assert bodo_module is not None
+                mesh_shape = mesh_shape_from_resource(
+                    self.resources,
+                    cast("Any", bodo_module).get_size(),
+                )
                 axis_idx = getattr(self, "_primary_axis_idx", 0)
                 try:
                     tmp = _get_df_python_func_plan(
@@ -380,13 +442,16 @@ class DataJAXPlan(LazyPlan):
                 except Exception:
                     pass
 
-        left_cols = list(source_plan.empty_data.columns)
-        right_cols = list(right_plan.empty_data.columns)
-        left_key_idx = source_plan.empty_data.columns.get_loc(step.left_on)
-        right_key_idx = right_plan.empty_data.columns.get_loc(step.right_on)
+        left_empty = cast("pd.DataFrame", source_plan.empty_data)
+        right_empty_data = cast("pd.DataFrame", right_plan.empty_data)
+
+        left_cols = list(left_empty.columns)
+        right_cols = list(right_empty_data.columns)
+        left_key_idx = left_empty.columns.get_loc(step.left_on)
+        right_key_idx = right_empty_data.columns.get_loc(step.right_on)
 
         combined = pd.concat(
-            [source_plan.empty_data.iloc[0:0], right_plan.empty_data.iloc[0:0]],
+            [left_empty.iloc[0:0], right_empty_data.iloc[0:0]],
             axis=1,
         )
         combined.columns = [f"{name}__{i}" for i, name in enumerate(combined.columns)]
@@ -399,7 +464,7 @@ class DataJAXPlan(LazyPlan):
             [(left_key_idx, right_key_idx)],
         )
 
-        n_left_indices = get_n_index_arrays(source_plan.empty_data.index)
+        n_left_indices = int(get_n_index_arrays(left_empty.index))
         col_indices = list(range(len(left_cols)))
         for i, col in enumerate(right_cols):
             if col in left_cols:
@@ -408,9 +473,7 @@ class DataJAXPlan(LazyPlan):
 
         output_columns: list[str] = list(left_cols)
         output_columns.extend(col for col in right_cols if col not in left_cols)
-        output_data: dict[str, pd.Series] = {
-            col: source_plan.empty_data[col] for col in left_cols
-        }
+        output_data: dict[str, Any] = {col: left_empty[col] for col in left_cols}
         right_empty = right_df.head(0)
         for col in right_cols:
             if col in output_data:
@@ -426,20 +489,25 @@ class DataJAXPlan(LazyPlan):
         )
 
     def _translate_repartition_step(
-        self, step: RepartitionStep, source_plan: LazyPlan
-    ) -> LazyPlan:
+        self, step: RepartitionStep, source_plan: LazyPlanLike
+    ) -> LazyPlanLike:
         spec = step.spec
         is_key_partition = getattr(spec, "kind", None) == "key"
         has_key = getattr(spec, "key", None) is not None
         if is_key_partition and has_key:
             if self.resources is None:
                 return source_plan
+            bodo_module: Any | None = None
             try:
-                import bodo  # local import to avoid sandbox import errors
-                run_parallel = getattr(bodo, "dataframe_library_run_parallel", False)
+                import bodo as bodo_module  # type: ignore[import-not-found]
+
+                run_parallel = bool(
+                    getattr(bodo_module, "dataframe_library_run_parallel", False)
+                )
             except Exception:
                 run_parallel = False
             import os
+
             if os.environ.get("DATAJAX_DISABLE_NATIVE_REBALANCE", "0") == "1":
                 run_parallel = False
 
@@ -448,12 +516,17 @@ class DataJAXPlan(LazyPlan):
                 # would expect a Series-like return.
                 return source_plan
 
-            mesh_shape = mesh_shape_from_resource(self.resources, bodo.get_size())
+            assert bodo_module is not None
+            mesh_shape = mesh_shape_from_resource(
+                self.resources,
+                cast("Any", bodo_module).get_size(),
+            )
             axis_idx = resolve_mesh_axis(getattr(spec, "axis", None), self.resources, 0)
             try:
+                empty_data = cast("pd.DataFrame", source_plan.empty_data)
                 tmp = _get_df_python_func_plan(
                     source_plan,
-                    source_plan.empty_data,
+                    empty_data,
                     rebalance_by_key,
                     (spec.key, mesh_shape, axis_idx),
                     {},
@@ -468,19 +541,20 @@ class DataJAXPlan(LazyPlan):
                     f"axis={axis_name or axis_idx} shape={mesh_shape}"
                 )
                 self._primary_axis_idx = axis_idx
-                return getattr(tmp, "_plan", tmp)
+                return cast("LazyPlanLike", getattr(tmp, "_plan", tmp))
             except Exception:
                 return source_plan
 
-        indices = list(range(len(source_plan.empty_data.columns)))
-        n_index_cols = get_n_index_arrays(source_plan.empty_data.index)
+        empty_data = cast("pd.DataFrame", source_plan.empty_data)
+        indices = list(range(len(empty_data.columns)))
+        n_index_cols = int(get_n_index_arrays(empty_data.index))
         indices.extend(
             range(
-                len(source_plan.empty_data.columns),
-                len(source_plan.empty_data.columns) + n_index_cols,
+                len(empty_data.columns),
+                len(empty_data.columns) + n_index_cols,
             )
         )
         exprs = make_col_ref_exprs(indices, source_plan)
-        projection = LogicalProjection(source_plan.empty_data, source_plan, exprs)
-        projection.target_sharding = step.spec
+        projection = LogicalProjection(empty_data, source_plan, exprs)
+        cast("Any", projection).target_sharding = step.spec
         return projection

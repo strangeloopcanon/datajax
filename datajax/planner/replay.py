@@ -10,7 +10,7 @@ This module lets you:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from datajax.ir.serialize import trace_from_list
 from datajax.planner.metrics import PlanMetrics, estimate_plan_metrics
@@ -90,7 +90,10 @@ def replay_and_tune(
     # Detect serialized form (sequence of dicts)
     items = list(trace_or_serialized)
     if items and isinstance(items[0], dict):
-        trace = trace_from_list(items, rhs_tables=rhs_tables)
+        trace = trace_from_list(
+            cast("list[dict[str, Any]]", items),
+            rhs_tables=rhs_tables,
+        )
     else:
         trace = items  # type: ignore[assignment]
 

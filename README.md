@@ -35,7 +35,7 @@ datajax-replay-tuner --help
 ```
 
 - The published wheel includes the pandas-backed stub for quick experiments; flip the flags below to execute against real Bodo DataFrames.
-- For development with tests and static checks, install from source: `pip install -e .[dev]`.
+- For development with tests and static checks, install from source: `make setup` (uses `uv`) or `pip install -e .[dev]`.
 
 Quick CLI examples:
 
@@ -144,37 +144,40 @@ kernels such as Ragged Paged Attention v3.
 
 ## Example Usage
 
-Here is a simple example of how to use `djit` to define a sharded, just-in-time compiled feature engineering pipeline.
+DataJAX traces code that operates on `Frame` objects, but you can call the compiled function with a pandas `DataFrame` — it will be wrapped automatically at the boundary.
 
 ```python
 import pandas as pd
-from datajax.api import djit, shard
+from datajax import Frame, Resource, djit, pjit, shard
 
-# Define a function that takes a DataFrame and returns a transformed one
-@djit(
-    in_shardings=(shard.replicated(),),
+@djit
+def compute_revenue(frame: Frame) -> Frame:
+    revenue = (frame.unit_price * frame.qty).rename("revenue")
+    return revenue.groupby(frame.user_id).sum()
+
+mesh = Resource(mesh_axes=("rows",), world_size=4)
+pipeline = pjit(
+    compute_revenue,
     out_shardings=shard.by_key("user_id"),
+    resources=mesh,
 )
-def compute_features(df):
-    df["x2"] = df["x"] * 2
-    df_agg = df.groupby("user_id").agg(
-        total_x=pd.NamedAgg(column="x", aggfunc="sum"),
-        mean_x2=pd.NamedAgg(column="x2", aggfunc="mean"),
-    )
-    return df_agg
 
-# Create a sample DataFrame
-df = pd.DataFrame({
-    "user_id": [1, 2, 1, 2, 1],
-    "x": [0.1, 0.2, 0.3, 0.4, 0.5],
-})
+df = pd.DataFrame(
+    {
+        "user_id": [1, 2, 1, 2, 1],
+        "unit_price": [2.0, 3.0, 4.0, 1.0, 5.0],
+        "qty": [1, 2, 1, 3, 1],
+    }
+)
 
-# Execute the djit-compiled function
-result = compute_features(df)
-print(result)
+result = pipeline(df)
+print(result.to_pandas())
+
+# Introspection: staged plan summary (+ generated replay code on Bodo backend).
+print(pipeline.explain_last(include_source=True))
 ```
 
-The `@djit` decorator traces the pandas operations, plans the execution, and runs it on the selected backend. The `out_shardings` argument ensures the output data is partitioned by `user_id`.
+The `@djit` decorator traces operations on the `Frame` wrapper. `pjit` attaches sharding/mesh metadata and preserves a handle to the last execution plan via `pipeline.last_plan`.
 
 ## Current Capabilities
 

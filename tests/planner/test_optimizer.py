@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+
 from datajax.api.sharding import Resource, shard
 from datajax.ir.graph import (
     BinaryExpr,

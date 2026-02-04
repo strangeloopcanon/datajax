@@ -8,6 +8,7 @@ from types import ModuleType
 
 import pandas as pd
 import pytest
+
 from datajax import Frame, Resource, djit, pjit, scan, shard, vmap
 from datajax.ir.graph import AggregateStep, InputStep, MapStep
 from datajax.runtime import executor as runtime_executor
@@ -50,6 +51,77 @@ def test_djit_pipeline_traces(sample_frame: pd.DataFrame) -> None:
         assert isinstance(record.plan, DataJAXPlan)
     if hasattr(record.plan, "final_schema"):
         assert record.plan.final_schema == ("user_id", "revenue")
+
+
+@pytest.mark.parametrize("agg", ["mean", "min", "max"])
+def test_djit_pipeline_groupby_reductions(
+    sample_frame: pd.DataFrame,
+    agg: str,
+) -> None:
+    @djit
+    def featurize(df: Frame) -> Frame:
+        revenue = (df.unit_price * df.qty).rename("revenue")
+        grouped = revenue.groupby(df.user_id)
+        fn = getattr(grouped, agg)
+        return fn()
+
+    result = featurize(sample_frame)
+    revenue = (sample_frame["unit_price"] * sample_frame["qty"]).rename("revenue")
+    expected_series = getattr(revenue.groupby(sample_frame["user_id"]), agg)()
+    expected = expected_series.reset_index(name="revenue")
+    expected = expected.sort_values("user_id").reset_index(drop=True)
+    output = result.to_pandas().sort_values("user_id").reset_index(drop=True)
+    pd.testing.assert_frame_equal(output, expected)
+
+
+def test_executor_execute_runs_execution_plan(
+    sample_frame: pd.DataFrame,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_executor.reset_backend()
+    monkeypatch.delenv("DATAJAX_EXECUTOR", raising=False)
+    monkeypatch.delenv("DATAJAX_USE_BODO_STUB", raising=False)
+    monkeypatch.delenv("DATAJAX_ALLOW_BODO_IMPORT", raising=False)
+    monkeypatch.delenv("DATAJAX_NATIVE_BODO", raising=False)
+
+    @djit
+    def featurize(df: Frame) -> Frame:
+        revenue = (df.unit_price * df.qty).rename("revenue")
+        return revenue.groupby(df.user_id).mean()
+
+    expected_frame = featurize(sample_frame)
+    record = featurize.last_execution
+    assert record is not None
+
+    executed = runtime_executor.execute(record.plan, frame=sample_frame)
+    pd.testing.assert_frame_equal(
+        executed.sort_values("user_id").reset_index(drop=True),
+        expected_frame.to_pandas().sort_values("user_id").reset_index(drop=True),
+    )
+
+
+def test_djit_explain_last_includes_sources(
+    sample_frame: pd.DataFrame,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_executor.reset_backend()
+    monkeypatch.delenv("DATAJAX_EXECUTOR", raising=False)
+    monkeypatch.delenv("DATAJAX_USE_BODO_STUB", raising=False)
+    monkeypatch.delenv("DATAJAX_ALLOW_BODO_IMPORT", raising=False)
+    monkeypatch.delenv("DATAJAX_NATIVE_BODO", raising=False)
+
+    @djit
+    def featurize(df: Frame) -> Frame:
+        revenue = (df.unit_price * df.qty).rename("revenue")
+        return revenue.groupby(df.user_id).mean()
+
+    _ = featurize(sample_frame)
+    summary = featurize.explain_last()
+    assert "ExecutionPlan" in summary
+    assert "stages:" in summary
+
+    with_sources = featurize.explain_last(include_source=True)
+    assert "def _datajax_bodo_impl" in with_sources
 
 
 def test_pjit_wrapper_preserves_lower(sample_frame: pd.DataFrame) -> None:
@@ -191,7 +263,7 @@ def test_executor_uses_real_bodo_when_available(
     module.dataframe_library_run_parallel = False  # type: ignore[attr-defined]
     module.dataframe_library_profile = False  # type: ignore[attr-defined]
     module.dataframe_library_dump_plans = False  # type: ignore[attr-defined]
-    module.tracing_level = 0 # type: ignore[attr-defined]
+    module.tracing_level = 0  # type: ignore[attr-defined]
 
     libs_module = ModuleType("bodo.libs")
     distributed_api_module = ModuleType("bodo.libs.distributed_api")
@@ -254,7 +326,7 @@ def test_runtime_metrics_env_merges(tmp_path, sample_frame: pd.DataFrame) -> Non
         "bytes_moved": 1000,
         "shuffle_bytes": 250,
         "wgmma_occupancy": 0.8,
-        "notes": ["profiling"]
+        "notes": ["profiling"],
     }
     metrics_path.write_text(json.dumps(metrics_payload), encoding="utf-8")
 
@@ -333,6 +405,7 @@ def test_pjit_shard_axis_validation_index_invalid(sample_frame: pd.DataFrame) ->
     compiled = pjit(passthrough, out_shardings=wrong_spec, resources=mesh)
     with pytest.raises(ValueError):
         compiled(sample_frame)
+
 
 def test_djit_bodo_native_execution(
     sample_frame: pd.DataFrame,
