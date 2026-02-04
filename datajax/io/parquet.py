@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import pandas as pd
 
@@ -22,7 +22,7 @@ def read_parquet(
 ) -> Frame:
     """Load Parquet data into a Frame using pandas as the execution backend."""
 
-    df = pd.read_parquet(path, columns=columns)
+    df = pd.read_parquet(cast("Any", path), columns=columns)
     return Frame.from_pandas(df)
 
 

@@ -108,7 +108,7 @@ def test_merge_runtime_counters_overrides_fields(sample_frame):
         "shuffle_bytes": 5678,
         "wgmma_occupancy": 0.9,
         "l2_reuse": 0.5,
-        "notes": ["runtime"]
+        "notes": ["runtime"],
     }
     merge_runtime_counters(metrics, counters)
     assert metrics.runtime_input_bytes == 1234

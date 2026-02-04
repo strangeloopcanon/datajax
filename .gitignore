@@ -21,6 +21,7 @@ dist/
 .idea/
 .vscode/
 .claude/
+.codex/
 
 # Local data / outputs
 bench.json

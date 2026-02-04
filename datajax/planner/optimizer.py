@@ -25,6 +25,7 @@ else:
 
     Sequence = _abc.Sequence
 
+
 def _expr_columns(expr: Expr) -> set[str]:
     """Return the set of column names referenced by an expression."""
 

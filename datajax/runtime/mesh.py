@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
@@ -31,7 +31,8 @@ def mesh_shape_from_resource(resources, world_size: int) -> tuple[int, ...]:
             total *= max(size, 1)
         if total != int(world_size):
             raise ValueError(
-                f"Resource axis_sizes={shape} does not multiply to world_size={world_size}"
+                f"Resource axis_sizes={shape} does not multiply to world_size="
+                f"{world_size}"
             )
         return shape
     if not axes or len(axes) == 1:
@@ -109,9 +110,10 @@ def compute_destinations_by_key(
     mesh_shape: Sequence[int],
     axis_index: int,
 ) -> np.ndarray:
-    import pandas as pd
+    import pandas.util as pandas_util
 
-    hashed = pd.util.hash_pandas_object(df[key], index=False).to_numpy(dtype=np.uint64)
+    hash_fn = cast("Any", pandas_util.hash_pandas_object)
+    hashed = np.asarray(hash_fn(df[key], index=False), dtype=np.uint64)
     return compute_destinations_for_mesh(hashed, mesh_shape, axis_index)
 
 

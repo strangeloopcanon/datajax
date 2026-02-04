@@ -16,13 +16,13 @@ F = TypeVar("F", bound=Callable[..., Any])
 
 
 @overload
-def jit(fn: None = None, *, parallel: bool | None = None, **_: Any) -> Callable[[F], F]:
-    ...
+def jit(
+    fn: None = None, *, parallel: bool | None = None, **_: Any
+) -> Callable[[F], F]: ...
 
 
 @overload
-def jit(fn: F, *, parallel: bool | None = None, **_: Any) -> F:
-    ...
+def jit(fn: F, *, parallel: bool | None = None, **_: Any) -> F: ...
 
 
 def jit(

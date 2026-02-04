@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+
 from datajax.io.exporter import (
     build_prefix_cohorts,
     coalesce_kv_extents,

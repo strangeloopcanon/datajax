@@ -30,8 +30,6 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Mapping, Sequence
 
     import pandas as pd
-
-    from datajax.planner.plan import ExecutionPlan
 else:  # pragma: no cover - runtime types
     import types as _types
     from collections import abc as _abc
@@ -136,7 +134,7 @@ def _collect_column_usage(trace: Sequence[object]) -> dict[str, int]:
 
 
 def estimate_plan_metrics(
-    plan: ExecutionPlan,
+    plan: Any,
     *,
     sample_df: pd.DataFrame | None = None,
 ) -> PlanMetrics:
@@ -145,7 +143,7 @@ def estimate_plan_metrics(
     Parameters
     ----------
     plan:
-        The ExecutionPlan to analyze.
+        Plan-like object to analyze.
     sample_df:
         Optional concrete input frame used for scale estimates.
     """

@@ -87,9 +87,64 @@ class DjitFunction:
         result = self(*args, **kwargs)
         return result.trace
 
+    def explain(
+        self,
+        *args: Any,
+        include_source: bool = False,
+        include_metrics: bool = True,
+        include_trace: bool = False,
+        **kwargs: Any,
+    ) -> str:
+        """Execute the function (if needed) and return a human-readable plan summary."""
+
+        _ = self(*args, **kwargs)
+        return self.explain_last(
+            include_source=include_source,
+            include_metrics=include_metrics,
+            include_trace=include_trace,
+        )
+
     @property
     def last_execution(self) -> ExecutionRecord | None:
         return self._last_execution
+
+    @property
+    def last_compiled_plan(self) -> CompiledPlan | None:
+        return self._compiled_plan
+
+    def explain_last(
+        self,
+        *,
+        include_source: bool = False,
+        include_metrics: bool = True,
+        include_trace: bool = False,
+    ) -> str:
+        record = self._last_execution
+        if record is None:
+            raise RuntimeError("No execution record available; call the function first")
+
+        plan = record.plan
+        if callable(getattr(plan, "explain", None)):
+            try:
+                rendered = plan.explain(
+                    include_metrics=include_metrics,
+                    include_trace=include_trace,
+                )
+            except TypeError:
+                rendered = plan.explain()
+        elif callable(getattr(plan, "describe", None)):
+            rendered = "\n".join(str(line) for line in plan.describe())
+        else:
+            rendered = repr(plan)
+
+        if not include_source or self._compiled_plan is None:
+            return rendered
+
+        lines = [rendered, "", "sources:"]
+        for idx, stage in enumerate(self._compiled_plan.stages):
+            lines.append(f"[{idx}] {stage.stage.kind}")
+            lines.append(stage.source.rstrip())
+        return "\n".join(lines)
 
     def _sample_dataframe(self, args: tuple[Any, ...]) -> pd.DataFrame | None:
         if not args:
@@ -151,6 +206,7 @@ class DjitFunction:
 
     def _call_python(self, *args: Any, **kwargs: Any) -> Frame:
         self._compiled_plan = None
+        self._generated_source = None
         sample_df = self._sample_dataframe(args)
         wrapped_args = tuple(_wrap_arg(arg) for arg in args)
         wrapped_kwargs = {key: _wrap_arg(value) for key, value in kwargs.items()}
@@ -181,6 +237,8 @@ class DjitFunction:
         return materialized
 
     def _call_bodo(self, *args: Any, **kwargs: Any) -> Frame:
+        self._compiled_plan = None
+        self._generated_source = None
         wrapped_args = tuple(_wrap_arg(arg) for arg in args)
         wrapped_kwargs = {key: _wrap_arg(value) for key, value in kwargs.items()}
         traced_result = _unwrap_result(self._fn(*wrapped_args, **wrapped_kwargs))
@@ -206,15 +264,20 @@ class DjitFunction:
                 raise ValueError("Bodo execution requires a pandas DataFrame input")
             compiled = compile_plan_with_backend(plan, self._backend)
             self._compiled_plan = compiled
+            self._generated_source = "\n\n".join(
+                stage.source for stage in compiled.stages
+            )
             result_df = compiled.run(input_df)
 
         # Normalize pyarrow-backed dtypes to NumPy equivalents for consistency
         result_df = result_df.copy()
         for column in result_df.columns:
             dtype = result_df[column].dtype
-            if hasattr(dtype, "pyarrow_dtype"):
-                to_pandas = dtype.pyarrow_dtype.to_pandas_dtype()
-                result_df[column] = result_df[column].astype(to_pandas)
+            pyarrow_dtype = getattr(dtype, "pyarrow_dtype", None)
+            if pyarrow_dtype is not None and hasattr(pyarrow_dtype, "to_pandas_dtype"):
+                result_df[column] = result_df[column].astype(
+                    pyarrow_dtype.to_pandas_dtype()
+                )
 
         final_sharding = getattr(plan, "final_sharding", None)
         self._apply_runtime_metrics(plan, sample_df=input_df)

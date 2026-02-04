@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import operator
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Union
+from typing import TYPE_CHECKING, Any, Union, cast
 
 import pandas as pd
 
@@ -147,7 +147,10 @@ class Frame:
 
     def _evaluate_expr(self, expr: Expr) -> pd.Series:
         if isinstance(expr, ColumnRef):
-            return self._data[expr.name]
+            value = self._data[expr.name]
+            if isinstance(value, pd.DataFrame):
+                raise TypeError(f"Expected Series for column {expr.name!r}")
+            return value
         if isinstance(expr, Literal):
             return pd.Series([expr.value] * len(self._data), index=self._data.index)
         if isinstance(expr, BinaryExpr):
@@ -194,7 +197,7 @@ class Frame:
         if not value_series.name:
             value_series = value_series.rename(value_alias)
         key_series = self._evaluate_expr(key_expr)
-        key_name = key_series.name or inferred_key_alias
+        key_name = str(key_series.name or inferred_key_alias)
         if not key_series.name:
             key_series = key_series.rename(key_name)
 
@@ -203,9 +206,11 @@ class Frame:
             aggregated = grouped.count()
         else:
             aggregated = grouped.agg(agg)
-        result_name = value_series.name or value_alias
-        result = aggregated.reset_index(name=result_name)
-        result = result.rename(columns={result.columns[0]: key_name})
+        result_name = str(value_series.name or value_alias)
+        aggregated_series = cast("pd.Series", aggregated).copy()
+        aggregated_series.name = result_name
+        result = aggregated_series.reset_index()
+        result.columns = [key_name, result_name]
 
         map_step = MapStep(output=value_alias, expr=value_expr)
         agg_step = AggregateStep(
@@ -249,7 +254,7 @@ class Frame:
             right_df,
             left_on=on,
             right_on=on,
-            how=how,
+            how=cast("Any", how),
             suffixes=suffixes,
         )
         step = JoinStep(
@@ -272,6 +277,7 @@ class Frame:
             raise TypeError("Filter predicate must evaluate to booleans")
         filtered = self._data.loc[mask]
         return self._with_appended_steps(filtered, [FilterStep(predicate=pred_expr)])
+
 
 @dataclass(frozen=True)
 class SeriesExpr:
