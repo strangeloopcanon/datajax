@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
+from datajax.api.sharding import join_output_sharding
 from datajax.ir.graph import (
     AggregateStep,
     BinaryExpr,
@@ -262,6 +263,11 @@ def _format_step(step: object) -> str:
             f"-> ({step.key_alias!r}, {step.value_alias!r})"
         )
     if isinstance(step, JoinStep):
+        if step.suffixes != ("_x", "_y"):
+            return (
+                f"JoinStep how={step.how!r} on=({step.left_on!r}={step.right_on!r}) "
+                f"rhs_cols={len(step.right_columns)} suffixes={step.suffixes!r}"
+            )
         return (
             f"JoinStep how={step.how!r} on=({step.left_on!r}={step.right_on!r}) "
             f"rhs_cols={len(step.right_columns)}"
@@ -329,11 +335,26 @@ def _update_schema(schema: tuple[str, ...], step: object) -> tuple[str, ...]:
     if isinstance(step, AggregateStep):
         return (step.key_alias, step.value_alias)
     if isinstance(step, JoinStep):
-        new_cols = list(schema)
-        for col in step.right_columns:
-            if col not in new_cols:
-                new_cols.append(col)
-        return tuple(new_cols)
+        left_cols = list(schema)
+        right_cols = list(step.right_columns)
+        left_suffix, right_suffix = step.suffixes
+        overlap = {
+            col for col in right_cols if col in left_cols and col != step.left_on
+        }
+        result: list[str] = []
+        for col in left_cols:
+            if col in overlap:
+                result.append(f"{col}{left_suffix}")
+            else:
+                result.append(col)
+        for col in right_cols:
+            if col == step.right_on and step.right_on == step.left_on:
+                continue
+            if col in overlap:
+                result.append(f"{col}{right_suffix}")
+            elif col not in left_cols:
+                result.append(col)
+        return tuple(result)
     return schema
 
 
@@ -403,6 +424,12 @@ def _group_into_stages(
             current_sharding = step.spec
         else:
             current_schema = _update_schema(current_schema, step)
+            if isinstance(step, JoinStep):
+                current_sharding = join_output_sharding(
+                    current_sharding,
+                    left_on=step.left_on,
+                    how=step.how,
+                )
 
     flush()
     return stages, current_schema, current_sharding

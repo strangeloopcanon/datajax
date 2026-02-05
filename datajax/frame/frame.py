@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Union, cast
 
 import pandas as pd
 
+from datajax.api.sharding import join_output_sharding
 from datajax.ir.graph import (
     AggregateStep,
     BinaryExpr,
@@ -58,6 +59,8 @@ _LOGICAL_OPERATORS = {
     "and": operator.and_,
     "or": operator.or_,
 }
+
+_UNSET_SHARDING = object()
 
 
 def _ensure_expr(frame: Frame, value: SeriesLike) -> Expr:
@@ -138,11 +141,14 @@ class Frame:
         data: pd.DataFrame,
         steps: Iterable[object],
         *,
-        sharding: ShardSpec | None = None,
+        sharding: ShardSpec | None | object = _UNSET_SHARDING,
     ) -> Frame:
         new_trace = list(self._trace)
         new_trace.extend(steps)
-        sharding_value = sharding if sharding is not None else self._sharding
+        if sharding is _UNSET_SHARDING:
+            sharding_value = self._sharding
+        else:
+            sharding_value = cast("ShardSpec | None", sharding)
         return Frame(data, new_trace, sharding=sharding_value)
 
     def _evaluate_expr(self, expr: Expr) -> pd.Series:
@@ -244,6 +250,7 @@ class Frame:
         how: str = "inner",
         suffixes: tuple[str, str] = ("_x", "_y"),
     ) -> Frame:
+        """Join with RHS data and update sharding conservatively."""
         if isinstance(other, Frame):
             right_df = other.to_pandas()
         elif isinstance(other, pd.DataFrame):
@@ -263,8 +270,14 @@ class Frame:
             how=how,
             right_columns=tuple(right_df.columns),
             right_data=right_df,
+            suffixes=suffixes,
         )
-        return self._with_appended_steps(joined, [step])
+        output_sharding = join_output_sharding(
+            self._sharding,
+            left_on=on,
+            how=how,
+        )
+        return self._with_appended_steps(joined, [step], sharding=output_sharding)
 
     def repartition(self, spec: ShardSpec) -> Frame:
         step = RepartitionStep(spec=spec)

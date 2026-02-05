@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -43,4 +44,38 @@ class ShardBuilder:
 shard = ShardBuilder()
 
 
-__all__ = ["Resource", "ShardSpec", "shard"]
+def _spec_attr(spec: object | None, name: str) -> Any:
+    if spec is None:
+        return None
+    if isinstance(spec, dict):
+        return spec.get(name)
+    return getattr(spec, name, None)
+
+
+def join_output_sharding(
+    spec: object | None,
+    *,
+    left_on: str,
+    how: str,
+) -> object | None:
+    """Return a conservative post-join sharding contract.
+
+    Preserve key sharding only when the current key matches the left join key and
+    the join does not introduce unmatched RHS rows into the output (inner/left).
+    Replicated sharding remains replicated.
+    """
+
+    kind = _spec_attr(spec, "kind")
+    if kind == "replicated":
+        return spec
+    if kind != "key":
+        return None
+    key = _spec_attr(spec, "key")
+    if key != left_on:
+        return None
+    if how in {"inner", "left"}:
+        return spec
+    return None
+
+
+__all__ = ["Resource", "ShardSpec", "join_output_sharding", "shard"]

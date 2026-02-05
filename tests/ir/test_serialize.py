@@ -32,6 +32,7 @@ def _build_trace():
             how="left",
             right_columns=tuple(rhs.columns),
             right_data=rhs,
+            suffixes=("_left", "_right"),
         ),
         RepartitionStep(spec=shard.by_key("user_id")),
     ]
@@ -58,6 +59,7 @@ def test_trace_roundtrip_including_join_rhs():
     assert isinstance(restored[0], InputStep)
     join_step = next(step for step in restored if isinstance(step, JoinStep))
     assert join_step.right_data is rhs
+    assert join_step.suffixes == ("_left", "_right")
 
 
 def test_trace_roundtrip_keeps_repartition_spec():

@@ -85,6 +85,7 @@ class JoinStep:
     how: str
     right_columns: tuple[str, ...]
     right_data: Any
+    suffixes: tuple[str, str] = ("_x", "_y")
 
 
 @dataclass(frozen=True)

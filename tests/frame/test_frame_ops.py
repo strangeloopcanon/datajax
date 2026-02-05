@@ -52,6 +52,35 @@ def test_frame_select_and_join(sample_frame: pd.DataFrame) -> None:
     pd.testing.assert_frame_equal(output, expected)
 
 
+def test_frame_join_suffixes_and_sharding_contract(sample_frame: pd.DataFrame) -> None:
+    spec = shard.by_key("user_id")
+    left = Frame.from_pandas(sample_frame).repartition(spec).select(["user_id", "qty"])
+    right_df = pd.DataFrame(
+        {"user_id": [1, 2], "qty": [100, 200], "country": ["US", "CA"]}
+    )
+
+    joined = left.join(right_df, on="user_id", suffixes=("_left", "_right"))
+    expected = left.to_pandas().merge(
+        right_df,
+        on="user_id",
+        suffixes=("_left", "_right"),
+    )
+    pd.testing.assert_frame_equal(
+        joined.to_pandas().sort_values(["user_id", "qty_left"]).reset_index(drop=True),
+        expected.sort_values(["user_id", "qty_left"]).reset_index(drop=True),
+    )
+    assert joined.sharding == spec
+    join_step = next(step for step in joined.trace if isinstance(step, JoinStep))
+    assert join_step.suffixes == ("_left", "_right")
+
+    right_on_qty = pd.DataFrame({"qty": [1, 2, 5], "segment": ["A", "B", "C"]})
+    joined_mismatch = left.join(right_on_qty, on="qty")
+    assert joined_mismatch.sharding is None
+
+    joined_right = left.join(right_df, on="user_id", how="right")
+    assert joined_right.sharding is None
+
+
 def test_frame_repartition_records_sharding(sample_frame: pd.DataFrame) -> None:
     frame = Frame.from_pandas(sample_frame)
     spec = shard.by_key("user_id")

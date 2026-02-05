@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from datajax.api.sharding import Resource, shard
+from datajax.frame.frame import Frame
 from datajax.ir.graph import (
     BinaryExpr,
     ColumnRef,
@@ -131,3 +132,28 @@ def test_build_plan_validates_axis_index_range():
 
     with pytest.raises(ValueError):
         build_plan(trace, backend="pandas", mode="stub", resources=resources)
+
+
+def test_build_plan_join_preserves_sharding_only_when_safe(sample_frame):
+    frame = Frame.from_pandas(sample_frame).repartition(shard.by_key("user_id"))
+    right_user = frame.to_pandas()[["user_id"]].drop_duplicates()
+    joined_on_key = frame.join(right_user, on="user_id", how="inner")
+    plan_key = build_plan(joined_on_key.trace, backend="pandas", mode="stub")
+    assert plan_key.final_sharding == shard.by_key("user_id")
+
+    right_qty = frame.to_pandas()[["qty"]].drop_duplicates()
+    joined_other_key = frame.join(right_qty, on="qty", how="inner")
+    plan_other_key = build_plan(joined_other_key.trace, backend="pandas", mode="stub")
+    assert plan_other_key.final_sharding is None
+
+    joined_right = frame.join(right_user, on="user_id", how="right")
+    plan_right = build_plan(joined_right.trace, backend="pandas", mode="stub")
+    assert plan_right.final_sharding is None
+
+
+def test_build_plan_join_schema_respects_suffixes(sample_frame):
+    frame = Frame.from_pandas(sample_frame).select(["user_id", "qty"])
+    right = frame.to_pandas()[["user_id", "qty"]].drop_duplicates()
+    joined = frame.join(right, on="user_id", suffixes=("_l", "_r"))
+    plan = build_plan(joined.trace, backend="pandas", mode="stub")
+    assert plan.final_schema == ("user_id", "qty_l", "qty_r")
