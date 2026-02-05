@@ -84,6 +84,7 @@ def compile_plan_with_backend(plan: ExecutionPlan, backend) -> CompiledPlan:
             input_schema=input_schema,
             output_schema=plan.final_schema,
             target_sharding=plan.final_sharding,
+            output_sharding=plan.final_sharding,
         )
         compiled_stages.append(
             CompiledStage(stage=fallback_stage, fn=compiled_fn, source=source)

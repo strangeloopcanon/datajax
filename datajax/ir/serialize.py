@@ -25,6 +25,7 @@ from datajax.ir.graph import (
     RenameExpr,
     RepartitionStep,
 )
+from datajax.ir.join_semantics import normalize_join_keys, normalize_suffixes
 
 if TYPE_CHECKING:  # pragma: no cover
     from collections.abc import Iterable, Mapping, Sequence
@@ -122,8 +123,8 @@ def step_to_dict(step: object) -> dict[str, Any]:
         # Avoid embedding RHS data by default
         return {
             "type": "join",
-            "left_on": step.left_on,
-            "right_on": step.right_on,
+            "left_on": list(step.left_on),
+            "right_on": list(step.right_on),
             "how": step.how,
             "right_columns": list(step.right_columns),
             "suffixes": list(step.suffixes),
@@ -167,17 +168,49 @@ def step_from_dict(
         right_df = None
         if rhs_tables is not None and rhs_tag is not None:
             right_df = rhs_tables.get(str(rhs_tag))
+        left_on_raw = data.get("left_on")
+        right_on_raw = data.get("right_on")
+        if isinstance(left_on_raw, str):
+            left_on_value: str | Sequence[str] | None = left_on_raw
+        elif left_on_raw is None:
+            left_on_value = None
+        else:
+            left_on_value = [str(item) for item in left_on_raw]  # type: ignore[arg-type]
+        if isinstance(right_on_raw, str):
+            right_on_value: str | Sequence[str] | None = right_on_raw
+        elif right_on_raw is None:
+            right_on_value = None
+        else:
+            right_on_value = [str(item) for item in right_on_raw]  # type: ignore[arg-type]
+        if left_on_value is None and right_on_value is None:
+            on_raw = data.get("on")
+            if isinstance(on_raw, str):
+                on_value: str | Sequence[str] | None = on_raw
+            elif on_raw is None:
+                on_value = None
+            else:
+                on_value = [str(item) for item in on_raw]  # type: ignore[arg-type]
+        else:
+            on_value = None
+        left_on, right_on = normalize_join_keys(
+            on=on_value,
+            left_on=left_on_value,
+            right_on=right_on_value,
+        )
         raw_suffixes = data.get("suffixes", ("_x", "_y"))
-        suffixes = tuple(str(item) for item in raw_suffixes)  # type: ignore[arg-type]
-        if len(suffixes) != 2:
+        try:
+            suffixes = normalize_suffixes(
+                tuple(str(item) for item in raw_suffixes)  # type: ignore[arg-type]
+            )
+        except Exception:
             suffixes = ("_x", "_y")
         return JoinStep(
-            left_on=str(data["left_on"]),
-            right_on=str(data["right_on"]),
+            left_on=left_on,
+            right_on=right_on,
             how=str(data.get("how", "inner")),
             right_columns=tuple(data.get("right_columns", ())),
             right_data=right_df,
-            suffixes=(suffixes[0], suffixes[1]),
+            suffixes=suffixes,
         )
     if t == "repartition":
         spec = data.get("spec", {})

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from datajax.api.sharding import shard
 from datajax.frame.frame import Frame
@@ -79,6 +80,62 @@ def test_frame_join_suffixes_and_sharding_contract(sample_frame: pd.DataFrame) -
 
     joined_right = left.join(right_df, on="user_id", how="right")
     assert joined_right.sharding is None
+
+
+def test_frame_join_left_on_right_on_multi_key_parity() -> None:
+    left_df = pd.DataFrame(
+        {
+            "user_id": [1, 1, 2, 3],
+            "region": [1, 2, 1, 1],
+            "qty": [1, 2, 3, 4],
+            "value": [10, 20, 30, 40],
+        }
+    )
+    right_df = pd.DataFrame(
+        {
+            "uid": [1, 2, 2, 4],
+            "region": [1, 1, 2, 1],
+            "value": [100, 200, 250, 400],
+            "segment": [9, 8, 7, 6],
+        }
+    )
+    frame = Frame.from_pandas(left_df).repartition(shard.by_key("user_id"))
+    joined = frame.join(
+        right_df,
+        left_on=("user_id", "region"),
+        right_on=("uid", "region"),
+        how="outer",
+        suffixes=("_l", "_r"),
+    )
+
+    expected = left_df.merge(
+        right_df,
+        left_on=["user_id", "region"],
+        right_on=["uid", "region"],
+        how="outer",
+        suffixes=("_l", "_r"),
+    )
+    output = (
+        joined.to_pandas()
+        .sort_values(["region", "user_id", "uid"])
+        .reset_index(drop=True)
+    )
+    expected = expected.sort_values(["region", "user_id", "uid"]).reset_index(drop=True)
+    pd.testing.assert_frame_equal(output, expected, check_dtype=False)
+
+    join_step = next(step for step in joined.trace if isinstance(step, JoinStep))
+    assert join_step.left_on == ("user_id", "region")
+    assert join_step.right_on == ("uid", "region")
+    assert joined.sharding is None
+
+
+def test_frame_join_rejects_suffix_collisions() -> None:
+    left_df = pd.DataFrame({"id": [1], "value": [10], "value_right": [11]})
+    right_df = pd.DataFrame({"id": [1], "value": [20]})
+    frame = Frame.from_pandas(left_df)
+
+    with pytest.raises(ValueError, match="collide"):
+        _ = frame.join(right_df, on="id", suffixes=("_right", "_right"))
 
 
 def test_frame_repartition_records_sharding(sample_frame: pd.DataFrame) -> None:

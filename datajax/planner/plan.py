@@ -24,6 +24,7 @@ from datajax.ir.graph import (
     RenameExpr,
     RepartitionStep,
 )
+from datajax.ir.join_semantics import build_join_column_plan
 from datajax.planner.metrics import PlanMetrics, estimate_plan_metrics, metrics_to_dict
 from datajax.planner.optimizer import optimize_trace, validate_mesh_axes
 
@@ -57,6 +58,7 @@ class Stage:
     input_schema: tuple[str, ...]
     output_schema: tuple[str, ...]
     target_sharding: object | None
+    output_sharding: object | None = None
 
     def describe(self) -> str:
         names = ", ".join(type(step).__name__ for step in self.steps)
@@ -65,7 +67,12 @@ class Stage:
     def explain_lines(self) -> list[str]:
         header = f"{self.kind}: {self.input_schema} -> {self.output_schema}"
         if self.target_sharding is not None:
-            header += f" sharding={_format_sharding(self.target_sharding)}"
+            header += f" in_sharding={_format_sharding(self.target_sharding)}"
+        if (
+            self.output_sharding is not None
+            and self.output_sharding != self.target_sharding
+        ):
+            header += f" out_sharding={_format_sharding(self.output_sharding)}"
         lines = [header]
         for step in self.steps:
             lines.append(f"  - {_format_step(step)}")
@@ -135,6 +142,7 @@ class ExecutionPlan:
                     "input_schema": list(stage.input_schema),
                     "output_schema": list(stage.output_schema),
                     "target_sharding": _sharding_to_dict(stage.target_sharding),
+                    "output_sharding": _sharding_to_dict(stage.output_sharding),
                     "steps": [step_to_dict(step) for step in stage.steps],
                 }
             )
@@ -263,13 +271,15 @@ def _format_step(step: object) -> str:
             f"-> ({step.key_alias!r}, {step.value_alias!r})"
         )
     if isinstance(step, JoinStep):
+        left_keys = step.left_on[0] if len(step.left_on) == 1 else step.left_on
+        right_keys = step.right_on[0] if len(step.right_on) == 1 else step.right_on
         if step.suffixes != ("_x", "_y"):
             return (
-                f"JoinStep how={step.how!r} on=({step.left_on!r}={step.right_on!r}) "
+                f"JoinStep how={step.how!r} on=({left_keys!r}={right_keys!r}) "
                 f"rhs_cols={len(step.right_columns)} suffixes={step.suffixes!r}"
             )
         return (
-            f"JoinStep how={step.how!r} on=({step.left_on!r}={step.right_on!r}) "
+            f"JoinStep how={step.how!r} on=({left_keys!r}={right_keys!r}) "
             f"rhs_cols={len(step.right_columns)}"
         )
     if isinstance(step, RepartitionStep):
@@ -335,26 +345,14 @@ def _update_schema(schema: tuple[str, ...], step: object) -> tuple[str, ...]:
     if isinstance(step, AggregateStep):
         return (step.key_alias, step.value_alias)
     if isinstance(step, JoinStep):
-        left_cols = list(schema)
-        right_cols = list(step.right_columns)
-        left_suffix, right_suffix = step.suffixes
-        overlap = {
-            col for col in right_cols if col in left_cols and col != step.left_on
-        }
-        result: list[str] = []
-        for col in left_cols:
-            if col in overlap:
-                result.append(f"{col}{left_suffix}")
-            else:
-                result.append(col)
-        for col in right_cols:
-            if col == step.right_on and step.right_on == step.left_on:
-                continue
-            if col in overlap:
-                result.append(f"{col}{right_suffix}")
-            elif col not in left_cols:
-                result.append(col)
-        return tuple(result)
+        plan = build_join_column_plan(
+            left_columns=schema,
+            right_columns=step.right_columns,
+            left_on=step.left_on,
+            right_on=step.right_on,
+            suffixes=step.suffixes,
+        )
+        return plan.output_columns
     return schema
 
 
@@ -383,6 +381,7 @@ def _group_into_stages(
                     input_schema=stage_input_schema,
                     output_schema=current_schema,
                     target_sharding=stage_sharding,
+                    output_sharding=current_sharding,
                 )
             )
         current_kind = None
@@ -404,6 +403,7 @@ def _group_into_stages(
                     input_schema=current_schema,
                     output_schema=current_schema,
                     target_sharding=current_sharding,
+                    output_sharding=current_sharding,
                 )
             )
             continue
@@ -435,6 +435,44 @@ def _group_into_stages(
     return stages, current_schema, current_sharding
 
 
+def _apply_step_sharding_contract(
+    current: object | None, step: object
+) -> object | None:
+    if isinstance(step, RepartitionStep):
+        return step.spec
+    if isinstance(step, JoinStep):
+        return join_output_sharding(current, left_on=step.left_on, how=step.how)
+    return current
+
+
+def validate_stage_distribution_contracts(stages: Sequence[Stage]) -> None:
+    previous_output: object | None = None
+    seen_input_stage = False
+    for stage in stages:
+        if stage.kind == "input":
+            previous_output = stage.output_sharding
+            seen_input_stage = True
+            continue
+        if not seen_input_stage:
+            raise ValueError("Execution plan is missing an input stage")
+        if stage.target_sharding != previous_output:
+            raise ValueError(
+                "Stage sharding contract mismatch: "
+                f"stage={stage.kind!r} expected_input={previous_output!r} "
+                f"actual_input={stage.target_sharding!r}"
+            )
+        expected_output = stage.target_sharding
+        for step in stage.steps:
+            expected_output = _apply_step_sharding_contract(expected_output, step)
+        if stage.output_sharding != expected_output:
+            raise ValueError(
+                "Stage sharding output mismatch: "
+                f"stage={stage.kind!r} expected_output={expected_output!r} "
+                f"actual_output={stage.output_sharding!r}"
+            )
+        previous_output = stage.output_sharding
+
+
 def build_plan(
     trace: Sequence[object],
     *,
@@ -447,6 +485,7 @@ def build_plan(
     validate_mesh_axes(optimized_trace, resources)
 
     stages, final_schema, final_sharding = _group_into_stages(optimized_trace)
+    validate_stage_distribution_contracts(stages)
 
     native_flag = os.environ.get("DATAJAX_NATIVE_BODO", "0") == "1"
     if backend == "bodo" and native_flag:
@@ -484,4 +523,9 @@ def build_plan(
     return plan
 
 
-__all__ = ["ExecutionPlan", "Stage", "build_plan"]
+__all__ = [
+    "ExecutionPlan",
+    "Stage",
+    "build_plan",
+    "validate_stage_distribution_contracts",
+]

@@ -1,4 +1,4 @@
-.PHONY: setup bootstrap check format lint type test deps-audit all fix clean
+.PHONY: setup bootstrap check format lint type test parity deps-audit all fix clean
 
 AGENT_MODE ?= baseline
 VENV ?= .venv
@@ -31,6 +31,9 @@ fix:
 test:
 	$(VENV)/bin/pytest -q
 
+parity:
+	$(VENV)/bin/pytest -q tests/parity/test_relational_parity.py
+
 deps-audit:
 	@if [ "$(AGENT_MODE)" = "production" ]; then \
 		$(VENV)/bin/pip-audit --progress-spinner off . ; \
@@ -41,6 +44,7 @@ deps-audit:
 all:
 	$(MAKE) check
 	$(MAKE) test
+	$(MAKE) parity
 	$(MAKE) deps-audit
 
 clean:

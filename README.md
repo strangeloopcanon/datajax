@@ -138,8 +138,9 @@ This definition can be handed to a TPU registry (for example,
 actual hardware.
 
 The bridge currently supports filter/project traces, `groupby` reductions (`sum`, `count`, `mean`,
-`min`, `max`), and join lowering with pandas-parity semantics (`inner`, `left`, `right`, `outer`,
-including suffix handling) while capturing sharding metadata (mesh, partition specs).
+`min`, `max`), and join lowering with pandas-parity semantics (`inner`, `left`, `right`, `outer`;
+`on` and `left_on`/`right_on`; multi-key joins; suffix-collision validation) while capturing
+sharding metadata (mesh, partition specs).
 Follow-up work will add ragged prefill metadata so the lowered plan can exercise TPU-optimised
 kernels such as Ragged Paged Attention v3.
 
@@ -192,21 +193,13 @@ The `@djit` decorator traces operations on the `Frame` wrapper. `pjit` attaches 
     - A comprehensive test suite covers tracing, planning, and backend execution.
     - A benchmark (`benchmarks/feature_pipeline.py`) compares pandas, the Bodo stub, and native Bodo execution.
 
-## Next Steps
+## Roadmap
 
-Our immediate focus is on hardening the prototype and moving towards a polished "JAX for data" experience.
-
-- **Core Planner & Execution**:
-    - Improve Bodo-native lowering to remove Python UDFs and add a native repartition operator.
-    - Enforce `Resource` meshes for multi-axis data layouts.
-    - Implement a planner optimiser for fusion, pushdowns, and cost-based choices.
-- **Feature Coverage**:
-    - Add IR nodes and lowering rules for window functions, multi-aggregation pipelines, and advanced join strategies.
-    - Improve I/O for Arrow/Parquet with sharding hints.
-- **Developer Experience**:
-    - Tighten JAX interoperability and data interchange (DLPack).
-    - Improve plan introspection, profiling, and error reporting.
-    - Expand CI to cover MPI environments and performance regressions.
+- Extend relational parity coverage across wider join/groupby/filter compositions.
+- Add native repartition operators to the Bodo `LazyPlan` path.
+- Tighten multi-axis mesh planning and validation for distributed layouts.
+- Expand optimizer rules for pushdown/fusion decisions with cost hints.
+- Add performance regression gates for representative tabular workloads.
 
 For more detail, see the contributor guidelines (`AGENTS.md`), the development plan (`docs/development_plan.md`), the native Bodo plan details (`docs/native_plan.md`), and the offline intelligence guide (`docs/offline_intelligence.md`).
 

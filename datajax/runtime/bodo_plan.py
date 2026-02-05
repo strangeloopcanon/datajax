@@ -20,6 +20,7 @@ from datajax.ir.graph import (
     RenameExpr,
     RepartitionStep,
 )
+from datajax.ir.join_semantics import build_join_column_plan
 from datajax.runtime.mesh import (
     mesh_shape_from_resource,
     rebalance_by_key,
@@ -379,6 +380,7 @@ class DataJAXPlan(cast("type[Any]", LazyPlan)):
 
         right_df = cast("pd.DataFrame", step.right_data)
         right_plan = self._plan_from_pandas(right_df)
+        right_rebalance_key = step.right_on[0] if len(step.right_on) == 1 else None
 
         # Only attempt to rebalance RHS when running the dataframe library in parallel.
         # In sequential mode, wrapping a DataFrame-returning function via
@@ -399,7 +401,7 @@ class DataJAXPlan(cast("type[Any]", LazyPlan)):
             if os.environ.get("DATAJAX_DISABLE_NATIVE_REBALANCE", "0") == "1":
                 run_parallel = False
 
-            if run_parallel:
+            if run_parallel and right_rebalance_key is not None:
                 assert bodo_module is not None
                 mesh_shape = mesh_shape_from_resource(
                     self.resources,
@@ -411,7 +413,7 @@ class DataJAXPlan(cast("type[Any]", LazyPlan)):
                         right_plan,
                         right_plan.empty_data,
                         rebalance_by_key,
-                        (step.right_on, mesh_shape, axis_idx),
+                        (right_rebalance_key, mesh_shape, axis_idx),
                         {},
                         is_method=False,
                     )
@@ -421,11 +423,15 @@ class DataJAXPlan(cast("type[Any]", LazyPlan)):
                     if axes and 0 <= axis_idx < len(axes):
                         axis_name = axes[axis_idx]
                     self.diagnostics.add(
-                        f"join: rhs_rebalanced key={step.right_on} "
+                        f"join: rhs_rebalanced key={right_rebalance_key} "
                         f"axis={axis_name or axis_idx} shape={mesh_shape}"
                     )
                 except Exception:
                     pass
+            elif run_parallel and right_rebalance_key is None:
+                self.diagnostics.add(
+                    "join: rhs_rebalance_skipped reason=multi_key_join"
+                )
             else:
                 # Sequential no-op: wrap RHS in an identity projection so downstream
                 # tooling can still observe a "rebalance wrapper" in the plan.
@@ -447,8 +453,10 @@ class DataJAXPlan(cast("type[Any]", LazyPlan)):
 
         left_cols = list(left_empty.columns)
         right_cols = list(right_empty_data.columns)
-        left_key_idx = left_empty.columns.get_loc(step.left_on)
-        right_key_idx = right_empty_data.columns.get_loc(step.right_on)
+        left_key_indices = [left_empty.columns.get_loc(key) for key in step.left_on]
+        right_key_indices = [
+            right_empty_data.columns.get_loc(key) for key in step.right_on
+        ]
 
         combined = pd.concat(
             [left_empty.iloc[0:0], right_empty_data.iloc[0:0]],
@@ -461,38 +469,32 @@ class DataJAXPlan(cast("type[Any]", LazyPlan)):
             source_plan,
             right_plan,
             join_type,
-            [(left_key_idx, right_key_idx)],
+            list(zip(left_key_indices, right_key_indices, strict=True)),
         )
 
         n_left_indices = int(get_n_index_arrays(left_empty.index))
         col_indices = list(range(len(left_cols)))
-        left_suffix, right_suffix = step.suffixes
-        overlap = {
-            col for col in right_cols if col in left_cols and col != step.left_on
-        }
-        for i, col in enumerate(right_cols):
-            if col == step.right_on and step.right_on == step.left_on:
-                continue
-            col_indices.append(len(left_cols) + n_left_indices + i)
+        column_plan = build_join_column_plan(
+            left_columns=tuple(left_cols),
+            right_columns=tuple(right_cols),
+            left_on=step.left_on,
+            right_on=step.right_on,
+            suffixes=step.suffixes,
+        )
+        for right_index, _, _ in column_plan.right_pairs:
+            col_indices.append(len(left_cols) + n_left_indices + right_index)
 
-        output_columns: list[str] = []
         output_data: dict[str, Any] = {}
-        for col in left_cols:
-            out_name = f"{col}{left_suffix}" if col in overlap else col
-            output_columns.append(out_name)
-            output_data[out_name] = left_empty[col]
+        for source_col, out_name in column_plan.left_pairs:
+            output_data[out_name] = left_empty[source_col]
         right_empty = right_df.head(0)
-        for col in right_cols:
-            if col == step.right_on and step.right_on == step.left_on:
-                continue
-            out_name = f"{col}{right_suffix}" if col in overlap else col
-            output_columns.append(out_name)
-            output_data[out_name] = right_empty[col]
+        for _, source_col, out_name in column_plan.right_pairs:
+            output_data[out_name] = right_empty[source_col]
         empty_output = pd.DataFrame(output_data)
 
         exprs = make_col_ref_exprs(col_indices, join_plan)
         return LogicalProjection(
-            empty_output[output_columns],
+            empty_output[list(column_plan.output_columns)],
             join_plan,
             exprs,
         )
