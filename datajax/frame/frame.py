@@ -25,6 +25,12 @@ from datajax.ir.graph import (
     RenameExpr,
     RepartitionStep,
 )
+from datajax.ir.join_semantics import (
+    build_join_column_plan,
+    normalize_join_keys,
+    normalize_suffixes,
+    pandas_join_key_arg,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -246,7 +252,9 @@ class Frame:
         self,
         other: Frame | pd.DataFrame,
         *,
-        on: str,
+        on: str | Sequence[str] | None = None,
+        left_on: str | Sequence[str] | None = None,
+        right_on: str | Sequence[str] | None = None,
         how: str = "inner",
         suffixes: tuple[str, str] = ("_x", "_y"),
     ) -> Frame:
@@ -257,24 +265,37 @@ class Frame:
             right_df = other.copy()
         else:
             raise TypeError("join expects a Frame or pandas.DataFrame as the RHS")
+        left_keys, right_keys = normalize_join_keys(
+            on=on,
+            left_on=left_on,
+            right_on=right_on,
+        )
+        normalized_suffixes = normalize_suffixes(suffixes)
+        build_join_column_plan(
+            left_columns=tuple(self._data.columns),
+            right_columns=tuple(right_df.columns),
+            left_on=left_keys,
+            right_on=right_keys,
+            suffixes=normalized_suffixes,
+        )
         joined = self._data.merge(
             right_df,
-            left_on=on,
-            right_on=on,
+            left_on=pandas_join_key_arg(left_keys),
+            right_on=pandas_join_key_arg(right_keys),
             how=cast("Any", how),
-            suffixes=suffixes,
+            suffixes=normalized_suffixes,
         )
         step = JoinStep(
-            left_on=on,
-            right_on=on,
+            left_on=left_keys,
+            right_on=right_keys,
             how=how,
             right_columns=tuple(right_df.columns),
             right_data=right_df,
-            suffixes=suffixes,
+            suffixes=normalized_suffixes,
         )
         output_sharding = join_output_sharding(
             self._sharding,
-            left_on=on,
+            left_on=left_keys,
             how=how,
         )
         return self._with_appended_steps(joined, [step], sharding=output_sharding)

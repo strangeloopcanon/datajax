@@ -27,8 +27,8 @@ def _build_trace():
         InputStep(("user_id", "qty")),
         MapStep(output="qty_scaled", expr=expr),
         JoinStep(
-            left_on="user_id",
-            right_on="user_id",
+            left_on=("user_id",),
+            right_on=("user_id",),
             how="left",
             right_columns=tuple(rhs.columns),
             right_data=rhs,
@@ -59,6 +59,8 @@ def test_trace_roundtrip_including_join_rhs():
     assert isinstance(restored[0], InputStep)
     join_step = next(step for step in restored if isinstance(step, JoinStep))
     assert join_step.right_data is rhs
+    assert join_step.left_on == ("user_id",)
+    assert join_step.right_on == ("user_id",)
     assert join_step.suffixes == ("_left", "_right")
 
 

@@ -17,7 +17,11 @@ from datajax.ir.graph import (
     RepartitionStep,
 )
 from datajax.planner.optimizer import optimize_trace
-from datajax.planner.plan import build_plan
+from datajax.planner.plan import (
+    Stage,
+    build_plan,
+    validate_stage_distribution_contracts,
+)
 
 
 def _dummy_trace(*steps):
@@ -146,6 +150,16 @@ def test_build_plan_join_preserves_sharding_only_when_safe(sample_frame):
     plan_other_key = build_plan(joined_other_key.trace, backend="pandas", mode="stub")
     assert plan_other_key.final_sharding is None
 
+    right_multi = frame.to_pandas()[["user_id", "qty"]].drop_duplicates()
+    joined_multi_key = frame.join(
+        right_multi,
+        left_on=("user_id", "qty"),
+        right_on=("user_id", "qty"),
+        how="inner",
+    )
+    plan_multi_key = build_plan(joined_multi_key.trace, backend="pandas", mode="stub")
+    assert plan_multi_key.final_sharding is None
+
     joined_right = frame.join(right_user, on="user_id", how="right")
     plan_right = build_plan(joined_right.trace, backend="pandas", mode="stub")
     assert plan_right.final_sharding is None
@@ -157,3 +171,45 @@ def test_build_plan_join_schema_respects_suffixes(sample_frame):
     joined = frame.join(right, on="user_id", suffixes=("_l", "_r"))
     plan = build_plan(joined.trace, backend="pandas", mode="stub")
     assert plan.final_schema == ("user_id", "qty_l", "qty_r")
+
+
+def test_build_plan_stage_distribution_contracts(sample_frame):
+    spec = shard.by_key("user_id")
+    frame = Frame.from_pandas(sample_frame).repartition(spec)
+    right = frame.to_pandas()[["user_id"]].drop_duplicates()
+    joined = frame.join(right, on="user_id", how="left")
+    plan = build_plan(joined.trace, backend="pandas", mode="stub")
+
+    repartition_stage = next(
+        stage for stage in plan.stages if stage.kind == "repartition"
+    )
+    assert repartition_stage.target_sharding is None
+    assert repartition_stage.output_sharding == spec
+
+    join_stage = next(stage for stage in plan.stages if stage.kind == "join")
+    assert join_stage.target_sharding == spec
+    assert join_stage.output_sharding == spec
+
+
+def test_stage_distribution_contract_validation_detects_mismatch():
+    stages = (
+        Stage(
+            kind="input",
+            steps=(),
+            input_schema=("id",),
+            output_schema=("id",),
+            target_sharding=None,
+            output_sharding=None,
+        ),
+        Stage(
+            kind="transform",
+            steps=(),
+            input_schema=("id",),
+            output_schema=("id",),
+            target_sharding=shard.by_key("id"),
+            output_sharding=shard.by_key("id"),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="Stage sharding contract mismatch"):
+        validate_stage_distribution_contracts(stages)

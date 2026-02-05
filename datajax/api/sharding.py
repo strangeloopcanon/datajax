@@ -55,13 +55,15 @@ def _spec_attr(spec: object | None, name: str) -> Any:
 def join_output_sharding(
     spec: object | None,
     *,
-    left_on: str,
+    left_on: tuple[str, ...],
     how: str,
 ) -> object | None:
     """Return a conservative post-join sharding contract.
 
-    Preserve key sharding only when the current key matches the left join key and
-    the join does not introduce unmatched RHS rows into the output (inner/left).
+    Preserve key sharding only when:
+    - the current contract is key-sharded,
+    - the join key is single-column and matches the current shard key,
+    - and the join does not introduce unmatched RHS rows (inner/left).
     Replicated sharding remains replicated.
     """
 
@@ -71,7 +73,7 @@ def join_output_sharding(
     if kind != "key":
         return None
     key = _spec_attr(spec, "key")
-    if key != left_on:
+    if len(left_on) != 1 or key != left_on[0]:
         return None
     if how in {"inner", "left"}:
         return spec

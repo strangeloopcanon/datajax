@@ -80,8 +80,8 @@ class ProjectStep:
 
 @dataclass(frozen=True)
 class JoinStep:
-    left_on: str
-    right_on: str
+    left_on: tuple[str, ...]
+    right_on: tuple[str, ...]
     how: str
     right_columns: tuple[str, ...]
     right_data: Any

@@ -125,8 +125,8 @@ def _collect_column_usage(trace: Sequence[object]) -> dict[str, int]:
             cols.add(step.key_alias)
             cols.add(step.value_alias)
         elif isinstance(step, JoinStep):
-            cols.add(step.left_on)
-            cols.add(step.right_on)
+            cols.update(step.left_on)
+            cols.update(step.right_on)
             cols |= set(step.right_columns)
         for c in cols:
             usage[c] = usage.get(c, 0) + 1

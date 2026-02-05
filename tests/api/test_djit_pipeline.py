@@ -136,6 +136,61 @@ def test_djit_join_custom_suffixes_match_compiled_execution(
     runtime_executor.reset_backend()
 
 
+def test_djit_join_multikey_left_right_on_parity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_executor.reset_backend()
+    monkeypatch.delenv("DATAJAX_EXECUTOR", raising=False)
+    monkeypatch.delenv("DATAJAX_NATIVE_BODO", raising=False)
+
+    left = pd.DataFrame(
+        {
+            "user_id": [1, 1, 2, 3],
+            "region": [1, 2, 1, 1],
+            "qty": [1, 2, 3, 4],
+            "value": [10, 20, 30, 40],
+        }
+    )
+    rhs = pd.DataFrame(
+        {
+            "uid": [1, 2, 2, 4],
+            "region": [1, 1, 2, 1],
+            "value": [100, 200, 250, 400],
+            "segment": [9, 8, 7, 6],
+        }
+    )
+
+    @djit
+    def enrich(df: Frame) -> Frame:
+        return df.join(
+            rhs,
+            left_on=["user_id", "region"],
+            right_on=["uid", "region"],
+            how="outer",
+            suffixes=("_l", "_r"),
+        )
+
+    result = enrich(left).to_pandas()
+    expected = left.merge(
+        rhs,
+        left_on=["user_id", "region"],
+        right_on=["uid", "region"],
+        how="outer",
+        suffixes=("_l", "_r"),
+    )
+    pd.testing.assert_frame_equal(
+        result.sort_values(["region", "user_id", "uid"]).reset_index(drop=True),
+        expected.sort_values(["region", "user_id", "uid"]).reset_index(drop=True),
+        check_dtype=False,
+    )
+
+    plan = enrich.last_execution.plan if enrich.last_execution is not None else None
+    if plan is not None and hasattr(plan, "final_schema"):
+        assert plan.final_schema == tuple(expected.columns)
+
+    runtime_executor.reset_backend()
+
+
 def test_djit_explain_last_includes_sources(
     sample_frame: pd.DataFrame,
     monkeypatch: pytest.MonkeyPatch,

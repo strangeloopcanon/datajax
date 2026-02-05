@@ -44,6 +44,14 @@ COUNTRY_DIM_OUTER = pd.DataFrame(
         "country_code": [1, 9],
     }
 )
+COUNTRY_DIM_MULTI = pd.DataFrame(
+    {
+        "country_id": [100, 100, 200, 999],
+        "bucket": [1, 2, 1, 1],
+        "value": [1000, 2000, 3000, 4000],
+        "country_code": [10, 20, 30, 90],
+    }
+)
 
 
 @djit
@@ -77,6 +85,17 @@ def join_country_suffixes(frame):
         COUNTRY_DIM_WITH_VALUE,
         on="country_id",
         how="inner",
+        suffixes=("_l", "_r"),
+    )
+
+
+@djit
+def join_country_outer_multikey(frame):
+    return frame.join(
+        COUNTRY_DIM_MULTI,
+        left_on=("country_id", "bucket"),
+        right_on=("country_id", "bucket"),
+        how="outer",
         suffixes=("_l", "_r"),
     )
 
@@ -223,4 +242,35 @@ def test_lower_to_jax_handles_join_suffixes():
     output = lowered.callable(arrays)
     out_df = pd.DataFrame({name: np.asarray(arr) for name, arr in output.items()})
     out_df = out_df.sort_values(["user_id", "value_l"]).reset_index(drop=True)
+    pd.testing.assert_frame_equal(out_df, result, check_dtype=False)
+
+
+def test_lower_to_jax_handles_multikey_outer_join():
+    fn = pjit(
+        join_country_outer_multikey,
+        out_shardings=shard.by_key("country_id"),
+        resources=Resource(mesh_axes=("rows",), world_size=1),
+    )
+    df = pd.DataFrame(
+        {
+            "user_id": [1, 2, 3],
+            "country_id": [100, 200, 300],
+            "bucket": [1, 1, 1],
+            "value": [10, 20, 30],
+        }
+    )
+    result = (
+        fn(df)
+        .to_pandas()
+        .sort_values(["country_id", "bucket", "country_code"])
+        .reset_index(drop=True)
+    )
+
+    lowered = fn.lower_to_jax(df)
+    arrays = dataframe_to_device_arrays(df)
+    output = lowered.callable(arrays)
+    out_df = pd.DataFrame({name: np.asarray(arr) for name, arr in output.items()})
+    out_df = out_df.sort_values(["country_id", "bucket", "country_code"]).reset_index(
+        drop=True
+    )
     pd.testing.assert_frame_equal(out_df, result, check_dtype=False)

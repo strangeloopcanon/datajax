@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
 from importlib import import_module
-from typing import TYPE_CHECKING, Any, TypeAlias, cast
+from typing import TYPE_CHECKING, Any, TypeAlias
 
 import numpy as np
 
@@ -31,6 +31,7 @@ from datajax.ir.graph import (
     RenameExpr,
     RepartitionStep,
 )
+from datajax.ir.join_semantics import build_join_column_plan
 from datajax.runtime.mesh import mesh_shape_from_resource
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -171,6 +172,76 @@ def _rows_mask(
     return mask
 
 
+def _build_join_indices(
+    match_matrix: JaxArray,
+    *,
+    how: str,
+    jnp: Any,
+) -> tuple[JaxArray, JaxArray]:
+    left_match, right_match = jnp.where(match_matrix)
+    if how == "inner":
+        return left_match, right_match
+
+    left_unmatched = jnp.where(~jnp.any(match_matrix, axis=1))[0]
+    right_unmatched = jnp.where(~jnp.any(match_matrix, axis=0))[0]
+
+    if how == "left":
+        missing_right = jnp.full(left_unmatched.shape, -1, dtype=right_match.dtype)
+        return (
+            jnp.concatenate([left_match, left_unmatched]),
+            jnp.concatenate([right_match, missing_right]),
+        )
+    if how == "right":
+        missing_left = jnp.full(right_unmatched.shape, -1, dtype=left_match.dtype)
+        return (
+            jnp.concatenate([left_match, missing_left]),
+            jnp.concatenate([right_match, right_unmatched]),
+        )
+    if how == "outer":
+        missing_right = jnp.full(left_unmatched.shape, -1, dtype=right_match.dtype)
+        missing_left = jnp.full(right_unmatched.shape, -1, dtype=left_match.dtype)
+        return (
+            jnp.concatenate([left_match, left_unmatched, missing_left]),
+            jnp.concatenate([right_match, missing_right, right_unmatched]),
+        )
+    raise NotImplementedError(f"Join how={how!r} is not supported")
+
+
+def _gather_join_output(
+    values: JaxArray,
+    indices: JaxArray,
+    *,
+    jnp: Any,
+) -> JaxArray:
+    if values.ndim != 1:
+        raise ValueError("Join lowering expects one-dimensional columns")
+    if indices.size == 0:
+        return values[:0]
+
+    source = values
+    if source.shape[0] == 0:
+        source = jnp.zeros((1,), dtype=values.dtype)
+    max_index = max(int(source.shape[0]) - 1, 0)
+    clipped = jnp.clip(indices, 0, max_index)
+    gathered = source[clipped]
+
+    missing = indices < 0
+    if not bool(np.asarray(missing).any()):
+        return gathered
+
+    if gathered.dtype == jnp.bool_ or jnp.issubdtype(gathered.dtype, jnp.integer):
+        promoted = gathered.astype(jnp.float64)
+        return jnp.where(missing, jnp.nan, promoted)
+    if jnp.issubdtype(gathered.dtype, jnp.floating):
+        return jnp.where(missing, jnp.nan, gathered)
+    if jnp.issubdtype(gathered.dtype, jnp.complexfloating):
+        nan_complex = jnp.asarray(np.nan + 1j * np.nan, dtype=gathered.dtype)
+        return jnp.where(missing, nan_complex, gathered)
+    raise NotImplementedError(
+        f"Join null propagation for dtype {gathered.dtype!r} is unsupported"
+    )
+
+
 def _apply_steps(
     plan: ExecutionPlan,
     columns: MutableMapping[str, JaxArray],
@@ -241,65 +312,71 @@ def _apply_steps(
                 columns[step.key_alias] = unique_keys
                 columns[step.value_alias] = reduced
             elif isinstance(step, JoinStep):
-                if step.left_on not in columns:
-                    raise KeyError(f"Left column {step.left_on!r} missing for join")
+                missing_left_keys = [key for key in step.left_on if key not in columns]
+                if missing_left_keys:
+                    raise KeyError(
+                        f"Left columns {missing_left_keys!r} missing for join"
+                    )
                 right_df = step.right_data
                 if right_df is None:
                     raise ValueError("Join step is missing right-hand side data")
-                if step.how != "inner":
-                    import pandas as _pd
+                missing_right_keys = [
+                    key for key in step.right_on if key not in right_df.columns
+                ]
+                if missing_right_keys:
+                    raise KeyError(
+                        f"Right columns {missing_right_keys!r} missing for join"
+                    )
+                source_columns = dict(columns)
+                left_key_arrays = [source_columns[key] for key in step.left_on]
+                right_key_arrays = [
+                    jnp.asarray(right_df[key].to_numpy()) for key in step.right_on
+                ]
+                if not left_key_arrays:
+                    raise ValueError("Join step has no key columns")
+                match_matrix = jnp.ones(
+                    (left_key_arrays[0].shape[0], right_key_arrays[0].shape[0]),
+                    dtype=jnp.bool_,
+                )
+                for left_key, right_key in zip(
+                    left_key_arrays, right_key_arrays, strict=True
+                ):
+                    match_matrix = jnp.logical_and(
+                        match_matrix,
+                        left_key[:, None] == right_key[None, :],
+                    )
+                left_indices, right_indices = _build_join_indices(
+                    match_matrix,
+                    how=step.how,
+                    jnp=jnp,
+                )
 
-                    try:
-                        left_df = _pd.DataFrame(
-                            {name: np.asarray(arr) for name, arr in columns.items()}
-                        )
-                        merged = left_df.merge(
-                            right_df,
-                            left_on=step.left_on,
-                            right_on=step.right_on,
-                            how=cast("Any", step.how),
-                            suffixes=step.suffixes,
-                        )
-                    except Exception as exc:
-                        raise NotImplementedError(
-                            f"Join how={step.how!r} is not supported"
-                        ) from exc
-                    columns.clear()
-                    for col in merged.columns:
-                        columns[col] = jnp.asarray(merged[col].to_numpy())
-                    continue
-
-                left_key = columns[step.left_on]
-                right_key = jnp.asarray(right_df[step.right_on].to_numpy())
                 right_arrays = {
                     col: jnp.asarray(right_df[col].to_numpy())
                     for col in step.right_columns
                 }
-                left_suffix, right_suffix = step.suffixes
-                overlap = {
-                    col
-                    for col in step.right_columns
-                    if col in columns and col != step.left_on
-                }
-                if overlap:
-                    renamed: dict[str, JaxArray] = {}
-                    for name, arr in columns.items():
-                        out_name = f"{name}{left_suffix}" if name in overlap else name
-                        renamed[out_name] = arr
-                    columns.clear()
-                    columns.update(renamed)
-
-                # Preserve one-to-many semantics by materializing all match pairs.
-                match_matrix = left_key[:, None] == right_key[None, :]
-                left_indices, right_indices = jnp.where(match_matrix)
-                for name in list(columns.keys()):
-                    columns[name] = columns[name][left_indices]
-                for col in step.right_columns:
-                    if col == step.right_on and step.right_on == step.left_on:
-                        continue
-                    right_array = right_arrays[col]
-                    out_name = f"{col}{right_suffix}" if col in overlap else col
-                    columns[out_name] = right_array[right_indices]
+                column_plan = build_join_column_plan(
+                    left_columns=tuple(source_columns.keys()),
+                    right_columns=step.right_columns,
+                    left_on=step.left_on,
+                    right_on=step.right_on,
+                    suffixes=step.suffixes,
+                )
+                joined_columns: dict[str, JaxArray] = {}
+                for source_name, out_name in column_plan.left_pairs:
+                    joined_columns[out_name] = _gather_join_output(
+                        source_columns[source_name],
+                        left_indices,
+                        jnp=jnp,
+                    )
+                for _, source_name, out_name in column_plan.right_pairs:
+                    joined_columns[out_name] = _gather_join_output(
+                        right_arrays[source_name],
+                        right_indices,
+                        jnp=jnp,
+                    )
+                columns.clear()
+                columns.update(joined_columns)
             elif isinstance(step, InputStep):
                 # already materialized
                 continue

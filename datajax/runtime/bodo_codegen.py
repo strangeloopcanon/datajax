@@ -21,6 +21,7 @@ from datajax.ir.graph import (
     ProjectStep,
     RenameExpr,
 )
+from datajax.ir.join_semantics import pandas_join_key_arg
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -122,9 +123,11 @@ def generate_bodo_callable(
             const_name = f"_datajax_join_rhs_{join_index}"
             join_index += 1
             constants[const_name] = step.right_data
+            left_on = pandas_join_key_arg(step.left_on)
+            right_on = pandas_join_key_arg(step.right_on)
             lines.append(
-                f"    frame = frame.merge({const_name}, left_on={step.left_on!r}, "
-                f"right_on={step.right_on!r}, how={step.how!r}, "
+                f"    frame = frame.merge({const_name}, left_on={left_on!r}, "
+                f"right_on={right_on!r}, how={step.how!r}, "
                 f"suffixes={step.suffixes!r})"
             )
         else:
