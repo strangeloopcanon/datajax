@@ -116,3 +116,26 @@ def test_merge_runtime_counters_overrides_fields(sample_frame):
     assert metrics.runtime_wgmma_occupancy == 0.9
     assert metrics.runtime_l2_reuse == 0.5
     assert metrics.runtime_notes == ["runtime"]
+
+
+def test_merge_runtime_counters_preserves_zero_values(sample_frame):
+    frame = Frame.from_pandas(sample_frame)
+    plan = build_plan(
+        _build_pipeline(frame).trace,
+        backend="pandas",
+        mode="stub",
+        input_df=sample_frame,
+    )
+    metrics = plan.metrics
+    assert metrics is not None
+    counters = {
+        "bytes_moved": 0,
+        "shuffle_bytes": 0,
+        "wgmma_occupancy": 0.0,
+        "l2_reuse": 0.0,
+    }
+    merge_runtime_counters(metrics, counters)
+    assert metrics.runtime_input_bytes == 0
+    assert metrics.runtime_shuffle_bytes == 0
+    assert metrics.runtime_wgmma_occupancy == 0.0
+    assert metrics.runtime_l2_reuse == 0.0

@@ -252,43 +252,16 @@ def _apply_steps(
                     col: jnp.asarray(right_df[col].to_numpy())
                     for col in step.right_columns
                 }
-                order = jnp.argsort(right_key)
-                sorted_keys = right_key[order]
-
-                sorted_keys_local = sorted_keys
-                order_local = order
-
-                def _lookup(
-                    value: JaxArray,
-                    *,
-                    sorted_keys: JaxArray = sorted_keys_local,
-                    order: JaxArray = order_local,
-                ) -> JaxArray:
-                    pos = jnp.searchsorted(sorted_keys, value, side="left")
-                    in_bounds = (pos < sorted_keys.shape[0]) & (
-                        sorted_keys[pos] == value
-                    )
-                    return jnp.where(in_bounds, order[pos], -1)
-
-                lookup_fn = jax.vmap(_lookup)
-                matches = lookup_fn(left_key)
-                mask = matches >= 0
-                if not jnp.any(mask):
-                    for name in list(columns.keys()):
-                        columns[name] = columns[name][:0]
-                    for col, arr in right_arrays.items():
-                        if col == step.left_on and col in columns:
-                            continue
-                        columns[col] = arr[:0]
-                    continue
+                # Preserve one-to-many semantics by materializing all match pairs.
+                match_matrix = left_key[:, None] == right_key[None, :]
+                left_indices, right_indices = jnp.where(match_matrix)
                 for name in list(columns.keys()):
-                    columns[name] = columns[name][mask]
-                valid_indices = matches[mask]
+                    columns[name] = columns[name][left_indices]
                 for col in step.right_columns:
                     if col == step.left_on and col in columns:
                         continue
                     right_array = right_arrays[col]
-                    columns[col] = right_array[valid_indices]
+                    columns[col] = right_array[right_indices]
             elif isinstance(step, InputStep):
                 # already materialized
                 continue

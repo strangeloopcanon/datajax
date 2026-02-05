@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from datajax.io.exporter import (
     build_prefix_cohorts,
@@ -107,3 +108,9 @@ def test_prefix_histogram_and_numeric_summary():
     summary = summarise_numeric_column(df["chunk"])
     assert summary["count"] == float(len(df))
     assert summary["max"] == float(64)
+
+
+def test_build_prefix_cohorts_rejects_negative_top_k():
+    df = pd.DataFrame({"key": ["a", "b", "c"]})
+    with pytest.raises(ValueError):
+        build_prefix_cohorts(df, key_col="key", top_k=-1)

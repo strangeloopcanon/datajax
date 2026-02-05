@@ -270,16 +270,23 @@ def estimate_plan_metrics(
 def merge_runtime_counters(metrics: PlanMetrics, counters: Mapping[str, Any]) -> None:
     """Overlay runtime counters onto estimated metrics."""
 
-    input_bytes = counters.get("bytes_moved") or counters.get("input_bytes")
+    def _first_present(*keys: str) -> Any | None:
+        for key in keys:
+            value = counters.get(key)
+            if value is not None:
+                return value
+        return None
+
+    input_bytes = _first_present("bytes_moved", "input_bytes")
     if input_bytes is not None:
         metrics.runtime_input_bytes = int(input_bytes)
-    shuffle_bytes = counters.get("shuffle_bytes") or counters.get("bytes_shuffled")
+    shuffle_bytes = _first_present("shuffle_bytes", "bytes_shuffled")
     if shuffle_bytes is not None:
         metrics.runtime_shuffle_bytes = int(shuffle_bytes)
-    occ = counters.get("wgmma_occupancy") or counters.get("occupancy")
+    occ = _first_present("wgmma_occupancy", "occupancy")
     if occ is not None:
         metrics.runtime_wgmma_occupancy = float(occ)
-    reuse = counters.get("l2_reuse") or counters.get("cache_reuse")
+    reuse = _first_present("l2_reuse", "cache_reuse")
     if reuse is not None:
         metrics.runtime_l2_reuse = float(reuse)
     runtime_notes = counters.get("notes")

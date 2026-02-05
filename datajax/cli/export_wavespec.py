@@ -36,6 +36,21 @@ def _load_usage(path: Path | None) -> dict[str, int] | None:
     return {str(k): int(v) for k, v in data.items()}
 
 
+def _parse_top_k(value: str) -> int | None:
+    text = value.strip().lower()
+    if text in {"none", "all"}:
+        return None
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "--top-k must be an integer or one of: none, all"
+        ) from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("--top-k must be >= 0, or use 'none'")
+    return parsed
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -66,9 +81,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--top-k",
-        type=int,
+        type=_parse_top_k,
         default=64,
-        help="Limit number of cohorts (None for all)",
+        help="Limit number of cohorts (use 'none' for all)",
     )
     parser.add_argument(
         "--usage-json",

@@ -25,11 +25,22 @@ def aggregate_total(frame):
 
 
 COUNTRY_DIM = pd.DataFrame({"country_id": [100, 200], "country_code": [1, 2]})
+COUNTRY_DIM_DUP = pd.DataFrame(
+    {
+        "country_id": [100, 100, 200],
+        "country_code": [1, 99, 2],
+    }
+)
 
 
 @djit
 def join_country(frame):
     return frame.join(COUNTRY_DIM, on="country_id")
+
+
+@djit
+def join_country_duplicates(frame):
+    return frame.join(COUNTRY_DIM_DUP, on="country_id")
 
 
 def test_lower_to_jax_emits_callable():
@@ -102,4 +113,28 @@ def test_lower_to_jax_handles_join():
     output = lowered.callable(arrays)
     out_df = pd.DataFrame({name: np.asarray(arr) for name, arr in output.items()})
     out_df = out_df.sort_values("user_id").reset_index(drop=True)
+    pd.testing.assert_frame_equal(out_df, result, check_dtype=False)
+
+
+def test_lower_to_jax_handles_join_one_to_many():
+    fn = pjit(
+        join_country_duplicates,
+        out_shardings=shard.by_key("country_id"),
+        resources=Resource(mesh_axes=("rows",), world_size=1),
+    )
+    df = pd.DataFrame(
+        {"user_id": [1, 2, 3], "country_id": [100, 200, 100], "value": [10, 20, 30]}
+    )
+    result = (
+        fn(df)
+        .to_pandas()
+        .sort_values(["user_id", "country_code"])
+        .reset_index(drop=True)
+    )
+
+    lowered = fn.lower_to_jax(df)
+    arrays = dataframe_to_device_arrays(df)
+    output = lowered.callable(arrays)
+    out_df = pd.DataFrame({name: np.asarray(arr) for name, arr in output.items()})
+    out_df = out_df.sort_values(["user_id", "country_code"]).reset_index(drop=True)
     pd.testing.assert_frame_equal(out_df, result, check_dtype=False)
