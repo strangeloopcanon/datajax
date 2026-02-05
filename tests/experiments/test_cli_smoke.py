@@ -50,6 +50,62 @@ def test_export_wavespec_cli(tmp_path: Path) -> None:
     assert data["meta"]["row_count"] == 4
 
 
+def test_export_wavespec_cli_top_k_none(tmp_path: Path) -> None:
+    out = tmp_path / "wavespec_all.json"
+    args = [
+        "-m",
+        "datajax.cli.export_wavespec",
+        "--logs",
+        str(ROOT / "tests" / "assets" / "sample_logs.csv"),
+        "--format",
+        "csv",
+        "--key",
+        "key",
+        "--size",
+        "size",
+        "--top-k",
+        "none",
+        "--out",
+        str(out),
+    ]
+    _run_cli(args, cwd=ROOT)
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["cohorts"]
+
+
+def test_export_wavespec_cli_rejects_negative_top_k(tmp_path: Path) -> None:
+    out = tmp_path / "wavespec_bad.json"
+    args = [
+        "-m",
+        "datajax.cli.export_wavespec",
+        "--logs",
+        str(ROOT / "tests" / "assets" / "sample_logs.csv"),
+        "--format",
+        "csv",
+        "--key",
+        "key",
+        "--size",
+        "size",
+        "--top-k",
+        "-1",
+        "--out",
+        str(out),
+    ]
+    env = os.environ.copy()
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = str(ROOT) if not existing else f"{ROOT}:{existing}"
+    proc = subprocess.run(
+        [sys.executable, *args],
+        cwd=ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode != 0
+    assert "--top-k must be >= 0" in proc.stderr
+
+
 def test_replay_tuner_cli(tmp_path: Path) -> None:
     sample = pd.DataFrame(
         {

@@ -66,7 +66,10 @@ def build_prefix_cohorts(
         counts["bytes"] = grouped["_bytes"].sum()
     counts = counts.sort_values(["count"], ascending=False)
     if top_k is not None:
-        counts = counts.head(int(top_k))
+        limit = int(top_k)
+        if limit < 0:
+            raise ValueError("top_k must be >= 0 or None")
+        counts = counts.head(limit)
     out: list[PrefixCohort] = []
     rows = counts.reset_index()
     has_bytes = "bytes" in rows.columns

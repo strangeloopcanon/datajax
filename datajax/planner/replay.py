@@ -113,7 +113,10 @@ def replay_and_tune(
         from datajax.planner.plan import ExecutionPlan
 
         if hasattr(plan, "trace") and hasattr(plan, "stages"):
-            metrics = estimate_plan_metrics(plan)  # type: ignore[arg-type]
+            metrics = estimate_plan_metrics(  # type: ignore[arg-type]
+                plan,
+                sample_df=input_df,
+            )
         else:
             # Fallback: build a lightweight ExecutionPlan-like holder
             dummy = ExecutionPlan(
