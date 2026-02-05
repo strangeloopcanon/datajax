@@ -466,19 +466,28 @@ class DataJAXPlan(cast("type[Any]", LazyPlan)):
 
         n_left_indices = int(get_n_index_arrays(left_empty.index))
         col_indices = list(range(len(left_cols)))
+        left_suffix, right_suffix = step.suffixes
+        overlap = {
+            col for col in right_cols if col in left_cols and col != step.left_on
+        }
         for i, col in enumerate(right_cols):
-            if col in left_cols:
+            if col == step.right_on and step.right_on == step.left_on:
                 continue
             col_indices.append(len(left_cols) + n_left_indices + i)
 
-        output_columns: list[str] = list(left_cols)
-        output_columns.extend(col for col in right_cols if col not in left_cols)
-        output_data: dict[str, Any] = {col: left_empty[col] for col in left_cols}
+        output_columns: list[str] = []
+        output_data: dict[str, Any] = {}
+        for col in left_cols:
+            out_name = f"{col}{left_suffix}" if col in overlap else col
+            output_columns.append(out_name)
+            output_data[out_name] = left_empty[col]
         right_empty = right_df.head(0)
         for col in right_cols:
-            if col in output_data:
+            if col == step.right_on and step.right_on == step.left_on:
                 continue
-            output_data[col] = right_empty[col]
+            out_name = f"{col}{right_suffix}" if col in overlap else col
+            output_columns.append(out_name)
+            output_data[out_name] = right_empty[col]
         empty_output = pd.DataFrame(output_data)
 
         exprs = make_col_ref_exprs(col_indices, join_plan)

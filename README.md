@@ -138,7 +138,8 @@ This definition can be handed to a TPU registry (for example,
 actual hardware.
 
 The bridge currently supports filter/project traces, `groupby` reductions (`sum`, `count`, `mean`,
-`min`, `max`), and inner hash joins while capturing sharding metadata (mesh, partition specs).
+`min`, `max`), and join lowering with pandas-parity semantics (`inner`, `left`, `right`, `outer`,
+including suffix handling) while capturing sharding metadata (mesh, partition specs).
 Follow-up work will add ragged prefill metadata so the lowered plan can exercise TPU-optimised
 kernels such as Ragged Paged Attention v3.
 

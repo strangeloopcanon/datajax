@@ -100,6 +100,42 @@ def test_executor_execute_runs_execution_plan(
     )
 
 
+def test_djit_join_custom_suffixes_match_compiled_execution(
+    sample_frame: pd.DataFrame,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_executor.reset_backend()
+    monkeypatch.delenv("DATAJAX_EXECUTOR", raising=False)
+    monkeypatch.delenv("DATAJAX_NATIVE_BODO", raising=False)
+
+    rhs = pd.DataFrame({"user_id": [1, 2], "qty": [100, 200], "country": ["US", "CA"]})
+
+    @djit
+    def enrich(df: Frame) -> Frame:
+        return df.select(["user_id", "qty"]).join(
+            rhs,
+            on="user_id",
+            suffixes=("_left", "_right"),
+        )
+
+    result = enrich(sample_frame)
+    expected = sample_frame[["user_id", "qty"]].merge(
+        rhs,
+        on="user_id",
+        suffixes=("_left", "_right"),
+    )
+    pd.testing.assert_frame_equal(
+        result.to_pandas().sort_values(["user_id", "qty_left"]).reset_index(drop=True),
+        expected.sort_values(["user_id", "qty_left"]).reset_index(drop=True),
+    )
+
+    plan = enrich.last_execution.plan if enrich.last_execution is not None else None
+    if plan is not None and hasattr(plan, "final_schema"):
+        assert plan.final_schema == ("user_id", "qty_left", "qty_right", "country")
+
+    runtime_executor.reset_backend()
+
+
 def test_djit_explain_last_includes_sources(
     sample_frame: pd.DataFrame,
     monkeypatch: pytest.MonkeyPatch,

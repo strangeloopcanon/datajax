@@ -126,6 +126,7 @@ def step_to_dict(step: object) -> dict[str, Any]:
             "right_on": step.right_on,
             "how": step.how,
             "right_columns": list(step.right_columns),
+            "suffixes": list(step.suffixes),
             # Optional binding; caller may add a tag name to look up tables
             "rhs_tag": None,
         }
@@ -166,12 +167,17 @@ def step_from_dict(
         right_df = None
         if rhs_tables is not None and rhs_tag is not None:
             right_df = rhs_tables.get(str(rhs_tag))
+        raw_suffixes = data.get("suffixes", ("_x", "_y"))
+        suffixes = tuple(str(item) for item in raw_suffixes)  # type: ignore[arg-type]
+        if len(suffixes) != 2:
+            suffixes = ("_x", "_y")
         return JoinStep(
             left_on=str(data["left_on"]),
             right_on=str(data["right_on"]),
             how=str(data.get("how", "inner")),
             right_columns=tuple(data.get("right_columns", ())),
             right_data=right_df,
+            suffixes=(suffixes[0], suffixes[1]),
         )
     if t == "repartition":
         spec = data.get("spec", {})

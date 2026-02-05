@@ -124,7 +124,8 @@ def generate_bodo_callable(
             constants[const_name] = step.right_data
             lines.append(
                 f"    frame = frame.merge({const_name}, left_on={step.left_on!r}, "
-                f"right_on={step.right_on!r}, how={step.how!r})"
+                f"right_on={step.right_on!r}, how={step.how!r}, "
+                f"suffixes={step.suffixes!r})"
             )
         else:
             raise TypeError(f"Unsupported IR step for Bodo codegen: {step!r}")

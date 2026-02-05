@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
 from importlib import import_module
-from typing import TYPE_CHECKING, Any, TypeAlias
+from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
 import numpy as np
 
@@ -241,27 +241,65 @@ def _apply_steps(
                 columns[step.key_alias] = unique_keys
                 columns[step.value_alias] = reduced
             elif isinstance(step, JoinStep):
-                if step.how != "inner":
-                    raise NotImplementedError(f"Join how={step.how!r} is not supported")
                 if step.left_on not in columns:
                     raise KeyError(f"Left column {step.left_on!r} missing for join")
-                left_key = columns[step.left_on]
                 right_df = step.right_data
+                if right_df is None:
+                    raise ValueError("Join step is missing right-hand side data")
+                if step.how != "inner":
+                    import pandas as _pd
+
+                    try:
+                        left_df = _pd.DataFrame(
+                            {name: np.asarray(arr) for name, arr in columns.items()}
+                        )
+                        merged = left_df.merge(
+                            right_df,
+                            left_on=step.left_on,
+                            right_on=step.right_on,
+                            how=cast("Any", step.how),
+                            suffixes=step.suffixes,
+                        )
+                    except Exception as exc:
+                        raise NotImplementedError(
+                            f"Join how={step.how!r} is not supported"
+                        ) from exc
+                    columns.clear()
+                    for col in merged.columns:
+                        columns[col] = jnp.asarray(merged[col].to_numpy())
+                    continue
+
+                left_key = columns[step.left_on]
                 right_key = jnp.asarray(right_df[step.right_on].to_numpy())
                 right_arrays = {
                     col: jnp.asarray(right_df[col].to_numpy())
                     for col in step.right_columns
                 }
+                left_suffix, right_suffix = step.suffixes
+                overlap = {
+                    col
+                    for col in step.right_columns
+                    if col in columns and col != step.left_on
+                }
+                if overlap:
+                    renamed: dict[str, JaxArray] = {}
+                    for name, arr in columns.items():
+                        out_name = f"{name}{left_suffix}" if name in overlap else name
+                        renamed[out_name] = arr
+                    columns.clear()
+                    columns.update(renamed)
+
                 # Preserve one-to-many semantics by materializing all match pairs.
                 match_matrix = left_key[:, None] == right_key[None, :]
                 left_indices, right_indices = jnp.where(match_matrix)
                 for name in list(columns.keys()):
                     columns[name] = columns[name][left_indices]
                 for col in step.right_columns:
-                    if col == step.left_on and col in columns:
+                    if col == step.right_on and step.right_on == step.left_on:
                         continue
                     right_array = right_arrays[col]
-                    columns[col] = right_array[right_indices]
+                    out_name = f"{col}{right_suffix}" if col in overlap else col
+                    columns[out_name] = right_array[right_indices]
             elif isinstance(step, InputStep):
                 # already materialized
                 continue
